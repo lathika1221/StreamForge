@@ -108,9 +108,9 @@ Invariants (enforced by the simulator tests and relied on downstream):
 
 Records that fail validation are routed to the dead-letter topic by the consumer (M5) instead of being dropped.
 
-**M3 requirement: fallback key.** A record without a usable `order_id` (for example the `missing_order_id` and `malformed_json` defects) cannot be keyed by order. The producer must publish it with a **null key** rather than failing or inventing a key. Not implemented yet.
+**Fallback key.** A record without a usable `order_id` (for example the `missing_order_id` and `malformed_json` defects) cannot be keyed by order. The producer publishes it with a **null key** rather than failing or inventing a key. Values are published byte-for-byte as generated.
 
-The local broker and topics are described in `docs/redpanda.md`.
+The local broker and topics are described in `docs/redpanda.md`, the producer in `docs/producer.md`.
 
 ## 6. Versioning
 

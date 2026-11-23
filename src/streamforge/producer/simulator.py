@@ -298,11 +298,8 @@ class EventSimulator:
 # --------------------------------------------------------------------------- CLI
 
 
-def _parse_args(argv: Sequence[str] | None) -> tuple[argparse.ArgumentParser, argparse.Namespace]:
-    parser = argparse.ArgumentParser(
-        prog="python -m streamforge.producer.simulator",
-        description="Print simulated StreamForge events as JSON lines (no Kafka).",
-    )
+def add_simulator_arguments(parser: argparse.ArgumentParser) -> None:
+    """Add the simulator options (shared by this CLI and the Kafka producer CLI)."""
     parser.add_argument("--orders", type=int, default=10, help="number of orders (default 10)")
     parser.add_argument("--seed", type=int, default=None, help="seed for reproducible output")
     parser.add_argument(
@@ -316,15 +313,16 @@ def _parse_args(argv: Sequence[str] | None) -> tuple[argparse.ArgumentParser, ar
     parser.add_argument(
         "--currency", choices=[c.value for c in Currency], default=Currency.INR.value
     )
-    return parser, parser.parse_args(argv)
 
 
-def main(argv: Sequence[str] | None = None) -> int:
-    parser, args = _parse_args(argv)
+def simulator_config_from_args(
+    parser: argparse.ArgumentParser, args: argparse.Namespace
+) -> SimulatorConfig:
+    """Validate parsed simulator options; exits via ``parser.error`` (code 2) if invalid."""
     if args.orders < 1:
         parser.error("--orders must be at least 1")
     try:
-        config = SimulatorConfig(
+        return SimulatorConfig(
             seed=args.seed,
             start_time=args.start_time,
             invalid_rate=args.invalid_rate,
@@ -333,6 +331,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
     except ValueError as exc:
         parser.error(str(exc))
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        prog="python -m streamforge.producer.simulator",
+        description="Print simulated StreamForge events as JSON lines (no Kafka).",
+    )
+    add_simulator_arguments(parser)
+    args = parser.parse_args(argv)
+    config = simulator_config_from_args(parser, args)
     # Write bytes with "\n" so output is byte-identical on every OS (no CRLF translation).
     out = sys.stdout.buffer
     valid = invalid = 0

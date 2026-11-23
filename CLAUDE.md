@@ -6,13 +6,15 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 StreamForge is an event-driven e-commerce data engineering platform (Python, Redpanda, SQL, Snowflake). MVP deadline: 2026-11-26. Agreed MVP scope excludes Airflow, S3 archival, Snowflake Streams/Tasks and required CI (kept as roadmap). Work proceeds milestone by milestone (M0 packaging/config → M1 schema+simulator → M2 Redpanda → M3 producer → M4 Snowflake setup → M5 consumer → M6 dbt → M7 Streamlit → M8 demo); the user approves each milestone before the next starts.
 
-Done: M0 (packaging + `streamforge.common.config`), M1 (event contract + simulator), M2 (local Redpanda via Docker Compose). Kafka publishing, consumer, Snowflake SQL, dbt and dashboard are not implemented yet.
+Done: M0 (packaging + `streamforge.common.config`), M1 (event contract + simulator), M2 (local Redpanda via Docker Compose), M3 (Kafka producer). Consumer, Snowflake SQL, dbt and dashboard are not implemented yet.
 
 ## Local Redpanda
 
 `infra/docker-compose.yml` runs one pinned Redpanda broker (`docs/redpanda.md` has all commands and troubleshooting). Host clients use `localhost:19092` (published on both `127.0.0.1` and `[::1]` — Windows resolves `localhost` to `::1` first); containers use `redpanda:9092`. Topics are created only by the idempotent `infra/redpanda/create-topics.sh` (`redpanda-init` service): `ecommerce.events` 3 partitions, `ecommerce.events.dlq` 1 partition. Topic auto-creation is disabled, so a misspelled topic fails with `UNKNOWN_TOPIC_OR_PARTITION`. `.gitattributes` forces LF for `*.sh` (CRLF breaks bash in the container). In Git Bash, prefix `docker run` commands containing container paths with `MSYS_NO_PATHCONV=1`.
 
-M3 requirement (not implemented yet): key messages by `order_id`; records without a usable `order_id` (`missing_order_id`, `malformed_json`) are published with a null key.
+## Producer
+
+`streamforge.producer.publisher` (`docs/producer.md`; CLI `python -m streamforge.producer`) publishes `SimulatedRecord.value` bytes unchanged to `KAFKA_EVENTS_TOPIC` only — never the DLQ (reserved for the M5 consumer). It must not parse, validate or re-serialize records (a unit test checks it doesn't reference `parse_event`/`to_json_line`/`json`). Key = well-formed `order_id`, otherwise null; never invent a key. Delivery counts only on callback success; `BufferError` → poll and retry (bounded), never drop; flush on exit; any failed/unconfirmed message → exit 1. The CLI reuses the simulator's options via `add_simulator_arguments()`/`simulator_config_from_args()` — add simulator flags there, not in the producer. Integration tests publish exact-check messages to a temporary topic (deleted afterwards); the CLI integration test appends a few events to `ecommerce.events`.
 
 ## Event contract
 
@@ -35,6 +37,7 @@ Dependencies are declared in `pyproject.toml`. The package is installed editable
 .venv/Scripts/python.exe -m pytest -m integration          # needs the Redpanda stack running; fails if unreachable
 docker compose -f infra/docker-compose.yml up -d --wait    # start Redpanda + create topics
 docker compose -f infra/docker-compose.yml down [-v]       # stop (-v also deletes broker data)
+.venv/Scripts/python.exe -m streamforge.producer --orders 100 [--seed 42 --start-time 2026-11-23T10:00:00Z] [--invalid-rate 0.05]   # publish to Redpanda
 .venv/Scripts/python.exe -m ruff check src tests
 .venv/Scripts/python.exe -m ruff format src tests
 .venv/Scripts/python.exe -m streamforge.producer.simulator --orders 10 --seed 42 --start-time 2026-11-23T10:00:00Z [--invalid-rate 0.1]   # JSONL to stdout, no Kafka

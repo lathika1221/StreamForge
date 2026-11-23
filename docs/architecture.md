@@ -51,7 +51,7 @@ Supporting infrastructure:
 Generates simulated e-commerce events, including orders, payments, cancellations, and shipments.
 
 ### 3.2 Event Producer
-Creates structured events and publishes them to Redpanda topics.
+Creates structured events and publishes them to the events topic (`ecommerce.events`), keyed by `order_id` (null key when a record has no usable `order_id`), with `acks=all`, idempotence enabled and delivery confirmed per message by callback. Values are published exactly as generated; validation and dead-letter routing are left to the consumer. Implemented in `streamforge.producer.publisher` (`python -m streamforge.producer`); see `docs/producer.md`.
 
 ### 3.3 Redpanda Streaming Layer
 Provides Kafka-compatible event streaming, topic management, partitioning, and consumer groups.

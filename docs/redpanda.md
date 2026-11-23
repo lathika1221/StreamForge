@@ -32,11 +32,13 @@ docker exec streamforge-redpanda rpk topic describe ecommerce.events -p
 docker exec streamforge-redpanda rpk cluster config get auto_create_topics_enabled   # false
 ```
 
-Host reachability (the integration tests read only metadata and produce nothing):
+Host reachability:
 
 ```
 .venv/Scripts/python.exe -m pytest -m integration
 ```
+
+`tests/integration/test_redpanda.py` reads only metadata. The producer integration tests (`tests/integration/test_producer.py`) publish to a temporary topic that is deleted afterwards, and **append a few simulated events to `ecommerce.events`** through the CLI test (see `docs/producer.md`).
 
 Reachability from another container on the compose network:
 
@@ -84,6 +86,6 @@ docker compose -f infra/docker-compose.yml down -v     # stop and delete all bro
 - No authentication or TLS. The broker is reachable only from this machine through the loopback interface.
 - No Redpanda Console UI is included. Use `rpk` through `docker exec`.
 
-## Requirement carried to M3 (producer)
+## Message keys
 
-Messages are keyed by `order_id` so that each order's events stay ordered within one partition. Injected invalid records with the `missing_order_id` or `malformed_json` defect have no usable `order_id`. The M3 producer must publish them **with a null key** (the client then spreads them across partitions) rather than failing or inventing a key. See `docs/event-schema.md` section 5.
+The producer (`docs/producer.md`) keys messages by `order_id`, so each order's events stay ordered within one partition. Injected invalid records with the `missing_order_id` or `malformed_json` defect have no usable `order_id` and are published **with a null key**, which places them on a random partition. See `docs/event-schema.md` section 5.
