@@ -31,7 +31,8 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-ra"
+# Unit tests by default; infrastructure tests run explicitly with `-m integration`.
+addopts = "-ra -m 'not integration'"
 markers = [
     "integration: requires running Redpanda and/or Snowflake",
 ]

@@ -1,0 +1,61 @@
+# StreamForge local streaming stack (M2): single-node Redpanda for development only.
+# Local and cost-free; no credentials. See docs/redpanda.md for all commands.
+#
+#   docker compose -f infra/docker-compose.yml up -d      # start + create topics
+#   docker compose -f infra/docker-compose.yml down       # stop (keeps data)
+#   docker compose -f infra/docker-compose.yml down -v    # stop and delete data
+#
+# Listeners:
+#   internal  redpanda:9092    other containers on the compose network
+#   external  localhost:19092  the host machine (bound to 127.0.0.1 only)
+
+name: streamforge
+
+services:
+  redpanda:
+    image: docker.redpanda.com/redpandadata/redpanda:v26.2.6
+    container_name: streamforge-redpanda
+    command:
+      - redpanda
+      - start
+      - --mode=dev-container
+      - --smp=1
+      - --memory=1G
+      - --default-log-level=info
+      - --kafka-addr=internal://0.0.0.0:9092,external://0.0.0.0:19092
+      - --advertise-kafka-addr=internal://redpanda:9092,external://localhost:19092
+      - --rpc-addr=redpanda:33145
+      - --advertise-rpc-addr=redpanda:33145
+    ports:
+      # Loopback only (IPv4 and IPv6): `localhost` resolves to ::1 first on Windows,
+      # and without the IPv6 binding Kafka clients stall ~2s per connection on it.
+      - "127.0.0.1:19092:19092"
+      - "[::1]:19092:19092"
+    volumes:
+      - redpanda-data:/var/lib/redpanda/data
+    healthcheck:
+      test: ["CMD-SHELL", "rpk cluster health | grep -qE 'Healthy:[[:space:]]+true'"]
+      interval: 5s
+      timeout: 5s
+      retries: 24
+      start_period: 15s
+    restart: unless-stopped
+
+  # One-shot, idempotent setup: disables topic auto-creation (so a typo in a topic
+  # name fails instead of creating a topic) and creates the topics. Exits 0.
+  redpanda-init:
+    image: docker.redpanda.com/redpandadata/redpanda:v26.2.6
+    container_name: streamforge-redpanda-init
+    depends_on:
+      redpanda:
+        condition: service_healthy
+    entrypoint: ["/bin/bash", "/opt/streamforge/create-topics.sh"]
+    environment:
+      RPK_BROKERS: redpanda:9092
+      RPK_ADMIN_HOSTS: redpanda:9644
+    volumes:
+      - ./redpanda/create-topics.sh:/opt/streamforge/create-topics.sh:ro
+    restart: "no"
+
+volumes:
+  redpanda-data:
