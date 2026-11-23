@@ -225,3 +225,7 @@ __marimo__/
 # StreamForge: private keys (Snowflake key-pair auth)
 *.p8
 *.pem
+
+# StreamForge: environment file variants (the template stays tracked)
+.env.*
+!.env.example
