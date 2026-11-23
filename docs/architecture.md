@@ -1,0 +1,134 @@
+# StreamForge Architecture
+
+## 1. Project Overview
+
+StreamForge is a real-time e-commerce data engineering platform designed to ingest, process, validate, and analyse streaming business events.
+
+**Objective:** Transform raw e-commerce events into reliable, actionable business intelligence.
+
+## 2. High-Level Architecture
+
+```text
+E-Commerce Event Simulator
+          |
+          v
+   Python Producer
+          |
+          v
+   Redpanda (Kafka API)
+          |
+          v
+   Python Consumer
+          |
+          v
+   Event Validation
+          |
+          v
+   Snowflake RAW Layer
+          |
+          v
+   SQL / dbt Transformations
+          |
+          v
+   Snowflake ANALYTICS
+          |
+          v
+   Streamlit Dashboard
+```
+
+Supporting infrastructure:
+
+- Docker Compose: Local service orchestration
+- Snowflake Streams and Tasks: Incremental processing
+- Apache Airflow: Workflow orchestration
+- AWS S3: Raw event archival
+- Pytest: Automated testing
+- GitHub Actions: Continuous integration
+
+## 3. Core Components
+
+### 3.1 Event Simulator
+Generates simulated e-commerce events, including orders, payments, cancellations, and shipments.
+
+### 3.2 Event Producer
+Creates structured events and publishes them to Redpanda topics.
+
+### 3.3 Redpanda Streaming Layer
+Provides Kafka-compatible event streaming, topic management, partitioning, and consumer groups.
+
+### 3.4 Event Consumer
+Consumes events, validates schemas, handles retries, and forwards accepted events to Snowflake.
+
+### 3.5 Snowflake Data Warehouse
+
+Three primary data layers:
+
+- RAW: Original ingested events
+- STAGING: Validated and transformed records
+- ANALYTICS: Business-ready facts, dimensions, and aggregates
+
+### 3.6 Transformation Layer
+Uses SQL and dbt for deduplication, incremental transformations, and analytical modelling.
+
+### 3.7 Dashboard
+Uses Streamlit to present order metrics, revenue trends, payment performance, and fulfilment insights.
+
+### 3.8 Orchestration and Archival
+Airflow manages scheduled workflows and reconciliation. AWS S3 stores raw event archives.
+
+## 4. Event Processing Lifecycle
+
+1. Generate an e-commerce event.
+2. Assign a unique event ID and timestamp.
+3. Publish the event to a Redpanda topic.
+4. Consume and validate the event.
+5. Record invalid events for investigation.
+6. Ingest accepted events into Snowflake RAW.
+7. Transform and deduplicate records.
+8. Publish analytical datasets.
+9. Display business metrics through Streamlit.
+
+## 5. Reliability and Fault Tolerance
+
+- Unique event IDs support deduplication.
+- Event timestamps and versions support out-of-order reconciliation.
+- Retries handle transient processing failures.
+- Dead-letter handling isolates invalid or repeatedly failing events.
+- Append-only raw storage preserves source events.
+- Replay mechanisms support recovery.
+- Data quality checks identify missing, duplicate, and inconsistent records.
+
+## 6. Security and Cost Controls
+
+- Credentials are stored in environment variables.
+- Secrets are excluded from Git.
+- Snowflake warehouses use auto-suspend.
+- Small compute resources are preferred during development.
+- AWS services are introduced only when required.
+
+## 7. Initial Performance Targets
+
+These are engineering targets, not measured results:
+
+| Metric | Target |
+|---|---:|
+| Event throughput | 100 events/sec |
+| Dashboard freshness | Under 10 seconds |
+| Duplicate business records | 0 |
+| Event accounting | All accepted events reconciled |
+| Recovery | Successful replay after restart |
+
+Actual performance will be benchmarked and documented.
+
+## 8. Implementation Strategy
+
+The project will be developed incrementally, prioritising a working end-to-end MVP:
+
+1. Event simulation
+2. Redpanda infrastructure
+3. Snowflake ingestion
+4. Data transformation
+5. Data quality and reliability
+6. Dashboard
+7. Orchestration and archival
+8. Testing and performance evaluation

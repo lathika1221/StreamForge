@@ -1,0 +1,46 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "streamforge"
+version = "0.1.0"
+description = "Event-driven e-commerce data engineering platform (Redpanda + Snowflake)."
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.11"
+dependencies = [
+    "pydantic>=2.7,<3",
+    "python-dotenv>=1.0",
+    "confluent-kafka>=2.4",
+    "faker>=25.0",
+    "snowflake-connector-python[pandas]>=3.12",
+    "streamlit>=1.36",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.5",
+]
+# dbt is intentionally not declared yet: it is resolved in M6 against a stable
+# (non-pre-release) dbt-core / dbt-snowflake release.
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+markers = [
+    "integration: requires running Redpanda and/or Snowflake",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]

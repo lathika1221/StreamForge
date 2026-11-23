@@ -221,3 +221,7 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# StreamForge: private keys (Snowflake key-pair auth)
+*.p8
+*.pem
