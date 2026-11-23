@@ -79,7 +79,7 @@ Airflow manages scheduled workflows and reconciliation. AWS S3 stores raw event 
 ## 4. Event Processing Lifecycle
 
 1. Generate an e-commerce event.
-2. Assign a unique event ID and timestamp.
+2. Assign a unique `event_id` and a UTC `event_timestamp`.
 3. Publish the event to a Redpanda topic.
 4. Consume and validate the event.
 5. Record invalid events for investigation.
@@ -91,7 +91,7 @@ Airflow manages scheduled workflows and reconciliation. AWS S3 stores raw event 
 ## 5. Reliability and Fault Tolerance
 
 - Unique event IDs support deduplication.
-- Event timestamps and versions support out-of-order reconciliation.
+- `event_timestamp`, `sequence_number` and `schema_version` support out-of-order reconciliation.
 - Retries handle transient processing failures.
 - Dead-letter handling isolates invalid or repeatedly failing events.
 - Append-only raw storage preserves source events.
