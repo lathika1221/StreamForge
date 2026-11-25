@@ -160,6 +160,10 @@ def test_sessions_always_log_out_on_close():
     assert connection_params(_pat())["enable_server_session_keep_alive_auto_detection"] is False
 
 
+def test_connector_never_logs_sql_text():
+    assert connection_params(_pat())["log_query_text"] is False
+
+
 @pytest.mark.parametrize(
     "env",
     [

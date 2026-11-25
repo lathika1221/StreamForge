@@ -88,7 +88,7 @@ print(publisher.stats)  # attempted / delivered / failed / pending / errors
 ## Tests
 
 - Unit tests (`tests/unit/test_publisher.py`) use a fake producer, so no broker is needed. They cover keys and null-key fallback, value bytes, callback accounting, queue-full retry and timeout, flush and pending handling, topic preflight, and CLI exit codes.
-- Integration tests (`tests/integration/test_producer.py`, run with `pytest -m integration`) need the local stack. They check exact keys and values on a temporary 3-partition topic that is deleted afterwards, that null-key invalid records keep their raw payload, and that the CLI publishes to the configured events topic and not the DLQ. **Each run appends a few fresh simulated events to `ecommerce.events`.**
+- Integration tests (`tests/integration/test_producer.py`, run with `pytest -m integration`) need the local stack. They check exact keys and values on a temporary 3-partition topic that is deleted afterwards, that null-key invalid records keep their raw payload, and that the CLI publishes to the configured events topic and not the DLQ. The CLI test configures its own temporary topics through `KAFKA_EVENTS_TOPIC` and `KAFKA_DLQ_TOPIC`. **No test writes to `ecommerce.events`.**
 
 ## Limitations
 

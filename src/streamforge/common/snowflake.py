@@ -46,6 +46,9 @@ def connection_params(settings: SnowflakeSettings, *, use_context: bool = True) 
         "login_timeout": LOGIN_TIMEOUT_SECONDS,
         # Always log the session out on close (no lingering server sessions).
         "enable_server_session_keep_alive_auto_detection": False,
+        # Never put SQL text in connector logs: client-side binding interpolates
+        # row values into the statement text (pinned explicitly; default is False).
+        "log_query_text": False,
     }
     if use_context:
         params["warehouse"] = settings.warehouse

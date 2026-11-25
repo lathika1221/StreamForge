@@ -38,7 +38,7 @@ Host reachability:
 .venv/Scripts/python.exe -m pytest -m integration
 ```
 
-`tests/integration/test_redpanda.py` reads only metadata. The producer integration tests (`tests/integration/test_producer.py`) publish to a temporary topic that is deleted afterwards, and **append a few simulated events to `ecommerce.events`** through the CLI test (see `docs/producer.md`).
+`tests/integration/test_redpanda.py` reads only metadata of the real topics. The producer and consumer integration tests use temporary topics (and unique consumer groups) that are deleted afterwards. **No test writes to `ecommerce.events` or `ecommerce.events.dlq`, or touches the `streamforge-consumer` group.**
 
 Reachability from another container on the compose network:
 

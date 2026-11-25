@@ -3,10 +3,10 @@
 Requires: docker compose -f infra/docker-compose.yml up -d --wait
 Run with: python -m pytest -m integration
 
-Exact key/value checks publish to a temporary 3-partition topic that is deleted
-afterwards. The CLI test publishes a small number of fresh (unseeded) simulated
-events to the configured events topic, which is the producer's real target.
-Consumption here is test-only; the consumer itself is M5.
+All tests publish only to temporary topics that are deleted afterwards; the real
+``ecommerce.events`` is never written. The CLI test configures its temporary topics
+through KAFKA_EVENTS_TOPIC / KAFKA_DLQ_TOPIC, exactly as a user would. Consumption
+here is test-only.
 """
 
 import dataclasses
@@ -130,21 +130,44 @@ def test_invalid_record_published_raw_with_null_key(settings, temp_topic, defect
     assert message.value() == record.value.encode("utf-8")  # byte-for-byte raw payload
 
 
+@pytest.fixture
+def cli_topics(settings, monkeypatch):
+    """Temporary events + DLQ topics configured through the same environment variables
+    the CLI reads (KAFKA_EVENTS_TOPIC / KAFKA_DLQ_TOPIC), so the real ecommerce.events
+    is never written by tests. Deleted afterwards."""
+    suffix = uuid.uuid4().hex[:10]
+    events, dlq = f"streamforge.it.cli.{suffix}", f"streamforge.it.cli.{suffix}.dlq"
+    admin = AdminClient({"bootstrap.servers": settings.bootstrap_servers})
+    created = admin.create_topics(
+        [
+            NewTopic(events, num_partitions=3, replication_factor=1),
+            NewTopic(dlq, num_partitions=1, replication_factor=1),
+        ]
+    )
+    for f in created.values():
+        f.result(15)
+    monkeypatch.setenv("KAFKA_EVENTS_TOPIC", events)
+    monkeypatch.setenv("KAFKA_DLQ_TOPIC", dlq)
+    yield events, dlq
+    for f in admin.delete_topics([events, dlq]).values():
+        f.result(15)
+
+
 def test_cli_publishes_to_configured_events_topic_and_not_the_dlq(
-    settings, tmp_path, monkeypatch, capsys
+    settings, cli_topics, tmp_path, monkeypatch, capsys
 ):
-    monkeypatch.chdir(tmp_path)  # no developer .env; process env still applies
-    events_start = _high_watermarks(settings.bootstrap_servers, settings.events_topic)
-    dlq_before = _high_watermarks(settings.bootstrap_servers, settings.dlq_topic)
+    events_topic, dlq_topic = cli_topics
+    monkeypatch.chdir(tmp_path)  # no developer .env; process env (incl. topics) applies
+    events_start = _high_watermarks(settings.bootstrap_servers, events_topic)
+    dlq_before = _high_watermarks(settings.bootstrap_servers, dlq_topic)
 
     assert main(["--orders", "2", "--invalid-rate", "0.5"]) == 0
     out = capsys.readouterr().out
+    assert events_topic in out  # the CLI resolved the configured topic from the environment
     delivered = int(re.search(r"delivered:\s+(\d+)", out).group(1))
     assert delivered > 0 and "failed:     0" in out and "pending:    0" in out
 
-    messages = _consume_from(
-        settings.bootstrap_servers, settings.events_topic, events_start, delivered
-    )
+    messages = _consume_from(settings.bootstrap_servers, events_topic, events_start, delivered)
     assert len(messages) == delivered
-    assert {m.topic() for m in messages} == {settings.events_topic}
-    assert _high_watermarks(settings.bootstrap_servers, settings.dlq_topic) == dlq_before
+    assert {m.topic() for m in messages} == {events_topic}
+    assert _high_watermarks(settings.bootstrap_servers, dlq_topic) == dlq_before

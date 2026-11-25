@@ -17,6 +17,8 @@ StreamForge uses one dedicated database, warehouse, role and resource monitor in
 
 Each setup step runs as the narrowest system role able to do it: `USERADMIN` creates the role, `SYSADMIN` creates the warehouse, database and schemas, `ACCOUNTADMIN` handles only the resource monitor, and `SECURITYADMIN` manages the grants.
 
+Tables are created by the application itself, as `STREAMFORGE_ROLE`, which therefore owns them. The M5 consumer creates `RAW.ORDER_CREATED`, `RAW.PAYMENT_PROCESSED`, `RAW.ORDER_CANCELLED`, `RAW.SHIPMENT_DISPATCHED` and `OPS.INGESTION_BATCHES` on first run (see `docs/consumer.md`).
+
 ## Grants to `STREAMFORGE_ROLE` (17 in total)
 
 | Privilege | On |

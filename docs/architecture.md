@@ -57,7 +57,7 @@ Creates structured events and publishes them to the events topic (`ecommerce.eve
 Provides Kafka-compatible event streaming, topic management, partitioning, and consumer groups.
 
 ### 3.4 Event Consumer
-Consumes events, validates schemas, handles retries, and forwards accepted events to Snowflake.
+Consumes events, validates schemas, handles retries, and forwards accepted events to Snowflake. Implemented in `streamforge.consumer` (`python -m streamforge.consumer`): batches are validated with `parse_event()`, invalid records go to `ecommerce.events.dlq` unchanged with failure headers, and valid events are loaded into one RAW table per event type in a single transaction via `MERGE` on the Kafka coordinates. Offsets are committed only afterwards. See `docs/consumer.md`.
 
 ### 3.5 Snowflake Data Warehouse
 

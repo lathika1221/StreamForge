@@ -106,7 +106,7 @@ Invariants (enforced by the simulator tests and relied on downstream):
 | Message key | `order_id`, so all events of one order land in the same partition and stay ordered |
 | Message value | The event JSON described above |
 
-Records that fail validation are routed to the dead-letter topic by the consumer (M5) instead of being dropped.
+Records that fail validation are routed to the dead-letter topic by the consumer (M5) instead of being dropped. The DLQ message keeps the original key and value bytes, and carries `streamforge.failure_type`, `streamforge.failure_reason` and the source topic, partition and offset as headers (see `docs/consumer.md`).
 
 **Fallback key.** A record without a usable `order_id` (for example the `missing_order_id` and `malformed_json` defects) cannot be keyed by order. The producer publishes it with a **null key** rather than failing or inventing a key. Values are published byte-for-byte as generated.
 
