@@ -53,8 +53,40 @@ def test_snowflake_missing_lists_every_required_variable():
     msg = str(exc.value)
     for name in BASE_SF:
         assert name in msg
-    assert "SNOWFLAKE_PRIVATE_KEY_PATH or SNOWFLAKE_PASSWORD" in msg
+    assert "one of SNOWFLAKE_TOKEN, SNOWFLAKE_PRIVATE_KEY_PATH or SNOWFLAKE_PASSWORD" in msg
     assert ".env.example" in msg
+
+
+def test_snowflake_pat_auth_and_token_hidden_from_repr():
+    s = load_snowflake_settings({**BASE_SF, "SNOWFLAKE_TOKEN": "pat-secret-value"})
+    assert s.auth_method == "pat"
+    assert s.token == "pat-secret-value"
+    assert s.password is None and s.private_key_path is None
+    assert "pat-secret-value" not in repr(s) and "pat-secret-value" not in str(s)
+
+
+def test_snowflake_whitespace_token_counts_as_missing():
+    with pytest.raises(ConfigError, match="SNOWFLAKE_TOKEN"):
+        load_snowflake_settings({**BASE_SF, "SNOWFLAKE_TOKEN": "   "})
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        {"SNOWFLAKE_PASSWORD": "pw-secret-value"},
+        {"SNOWFLAKE_PRIVATE_KEY_PATH": "__KEY__"},
+        {"SNOWFLAKE_PASSWORD": "pw-secret-value", "SNOWFLAKE_PRIVATE_KEY_PATH": "__KEY__"},
+    ],
+)
+def test_snowflake_rejects_pat_combined_with_other_auth_without_leaking(tmp_path: Path, extra):
+    key = tmp_path / "k.p8"
+    key.write_text("x")
+    extra = {k: str(key) if v == "__KEY__" else v for k, v in extra.items()}
+    with pytest.raises(ConfigError, match="only one authentication method") as exc:
+        load_snowflake_settings({**BASE_SF, "SNOWFLAKE_TOKEN": "pat-secret-value", **extra})
+    msg = str(exc.value)
+    assert "SNOWFLAKE_TOKEN" in msg
+    assert "pat-secret-value" not in msg and "pw-secret-value" not in msg
 
 
 def test_snowflake_whitespace_counts_as_missing():

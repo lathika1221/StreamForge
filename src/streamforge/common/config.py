@@ -74,9 +74,13 @@ class SnowflakeSettings:
     password: str | None = field(default=None, repr=False)
     private_key_path: Path | None = None
     private_key_passphrase: str | None = field(default=None, repr=False)
+    token: str | None = field(default=None, repr=False)  # programmatic access token (PAT)
 
     @property
     def auth_method(self) -> str:
+        """``"pat"``, ``"key_pair"`` or ``"password"``. Exactly one is configured."""
+        if self.token:
+            return "pat"
         return "key_pair" if self.private_key_path else "password"
 
 
@@ -91,16 +95,31 @@ _SNOWFLAKE_REQUIRED = (
 def load_snowflake_settings(env: Mapping[str, str] | None = None) -> SnowflakeSettings:
     """Load Snowflake settings; requires exactly one auth method.
 
-    Auth: either ``SNOWFLAKE_PRIVATE_KEY_PATH`` (key-pair, recommended) or
-    ``SNOWFLAKE_PASSWORD`` (password or programmatic access token).
+    Auth (set exactly one):
+
+    * ``SNOWFLAKE_TOKEN``: programmatic access token (PAT), sent with the
+      connector's ``PROGRAMMATIC_ACCESS_TOKEN`` authenticator;
+    * ``SNOWFLAKE_PRIVATE_KEY_PATH`` (+ optional ``SNOWFLAKE_PRIVATE_KEY_PASSPHRASE``):
+      key-pair (``SNOWFLAKE_JWT``) authentication;
+    * ``SNOWFLAKE_PASSWORD``: password authentication.
     """
     e = _environ(env)
 
     missing = [name for name in _SNOWFLAKE_REQUIRED if not _get(e, name)]
     password = _get(e, "SNOWFLAKE_PASSWORD")
+    token = _get(e, "SNOWFLAKE_TOKEN")
     key_path_raw = _get(e, "SNOWFLAKE_PRIVATE_KEY_PATH")
-    if not password and not key_path_raw:
-        missing.append("SNOWFLAKE_PRIVATE_KEY_PATH or SNOWFLAKE_PASSWORD")
+    provided = [
+        name
+        for name, value in (
+            ("SNOWFLAKE_TOKEN", token),
+            ("SNOWFLAKE_PRIVATE_KEY_PATH", key_path_raw),
+            ("SNOWFLAKE_PASSWORD", password),
+        )
+        if value
+    ]
+    if not provided:
+        missing.append("one of SNOWFLAKE_TOKEN, SNOWFLAKE_PRIVATE_KEY_PATH or SNOWFLAKE_PASSWORD")
     if missing:
         raise ConfigError(
             "Missing required environment variable(s): "
@@ -109,8 +128,8 @@ def load_snowflake_settings(env: Mapping[str, str] | None = None) -> SnowflakeSe
         )
 
     errors: list[str] = []
-    if password and key_path_raw:
-        errors.append("Set only one of SNOWFLAKE_PRIVATE_KEY_PATH or SNOWFLAKE_PASSWORD, not both.")
+    if len(provided) > 1:
+        errors.append("Set only one authentication method, not " + " and ".join(provided) + ".")
     key_path = Path(key_path_raw).expanduser() if key_path_raw else None
     if key_path is not None and not key_path.is_file():
         errors.append("SNOWFLAKE_PRIVATE_KEY_PATH does not point to an existing file.")
@@ -131,4 +150,5 @@ def load_snowflake_settings(env: Mapping[str, str] | None = None) -> SnowflakeSe
         password=password,
         private_key_path=key_path,
         private_key_passphrase=_get(e, "SNOWFLAKE_PRIVATE_KEY_PASSPHRASE"),
+        token=token,
     )

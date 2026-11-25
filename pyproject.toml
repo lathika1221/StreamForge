@@ -31,10 +31,12 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-# Unit tests by default; infrastructure tests run explicitly with `-m integration`.
-addopts = "-ra -m 'not integration'"
+# Unit tests by default; infrastructure tests run explicitly with
+# `-m integration` (local Redpanda) or `-m snowflake` (real Snowflake account, reads .env).
+addopts = "-ra -m 'not integration and not snowflake'"
 markers = [
-    "integration: requires running Redpanda and/or Snowflake",
+    "integration: requires the local Redpanda stack",
+    "snowflake: requires the M4 Snowflake resources and credentials in .env",
 ]
 
 [tool.ruff]

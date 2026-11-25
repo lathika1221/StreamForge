@@ -67,6 +67,8 @@ Three primary data layers:
 - STAGING: Validated and transformed records
 - ANALYTICS: Business-ready facts, dimensions, and aggregates
 
+Implemented in M4 as database `ECOMMERCE_STREAMING_DB` (schemas `RAW`, `STAGING`, `ANALYTICS`, plus `OPS` for load audit and reconciliation), the XS warehouse `STREAMFORGE_WH` (60 s auto-suspend) capped by the `STREAMFORGE_MONITOR` resource monitor (5 credits per month), and the least-privilege role `STREAMFORGE_ROLE`. See `docs/snowflake.md`.
+
 ### 3.6 Transformation Layer
 Uses SQL and dbt for deduplication, incremental transformations, and analytical modelling.
 

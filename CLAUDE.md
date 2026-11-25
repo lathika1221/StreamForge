@@ -6,7 +6,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 StreamForge is an event-driven e-commerce data engineering platform (Python, Redpanda, SQL, Snowflake). MVP deadline: 2026-11-26. Agreed MVP scope excludes Airflow, S3 archival, Snowflake Streams/Tasks and required CI (kept as roadmap). Work proceeds milestone by milestone (M0 packaging/config → M1 schema+simulator → M2 Redpanda → M3 producer → M4 Snowflake setup → M5 consumer → M6 dbt → M7 Streamlit → M8 demo); the user approves each milestone before the next starts.
 
-Done: M0 (packaging + `streamforge.common.config`), M1 (event contract + simulator), M2 (local Redpanda via Docker Compose), M3 (Kafka producer). Consumer, Snowflake SQL, dbt and dashboard are not implemented yet.
+Done: M0 (packaging + `streamforge.common.config`), M1 (event contract + simulator), M2 (local Redpanda via Docker Compose), M3 (Kafka producer), M4 (Snowflake database/warehouse/role/monitor). Consumer, dbt and dashboard are not implemented yet.
+
+## Snowflake
+
+`docs/snowflake.md` describes everything. Resources: `ECOMMERCE_STREAMING_DB` (schemas `RAW`, `STAGING`, `ANALYTICS`, `OPS`), `STREAMFORGE_WH` (XS, 60 s auto-suspend), `STREAMFORGE_MONITOR` (5 credits/month), `STREAMFORGE_ROLE`. They are created only by the idempotent `infra/snowflake/setup.sql` via `python -m streamforge.admin.snowflake_setup plan|apply|verify` — never `OR REPLACE`, never DROP; a unit test enforces this and checks the SQL grants equal `EXPECTED_ROLE_GRANTS`. When adding a privilege, update both `setup.sql` and `EXPECTED_ROLE_GRANTS`. Never touch `LATZ_DATA_ENGINEERING` or other pre-existing objects in that account. The app always runs as `STREAMFORGE_ROLE` (`.env SNOWFLAKE_ROLE`); `connect()` runs `USE SECONDARY ROLES NONE` because the user's default secondary roles are `ALL` (which would add ACCOUNTADMIN). Auth is key-pair; the encrypted key lives in `~/.snowflake/keys/` outside the repo. Avoid needless warehouse use: each `verify` costs ~0.017 credits; `pytest -m snowflake` uses no warehouse.
 
 ## Local Redpanda
 
@@ -35,6 +39,8 @@ Dependencies are declared in `pyproject.toml`. The package is installed editable
 .venv/Scripts/python.exe -m pytest                         # unit tests (addopts deselects `integration`)
 .venv/Scripts/python.exe -m pytest tests/unit/test_config.py::test_kafka_defaults_for_local_dev
 .venv/Scripts/python.exe -m pytest -m integration          # needs the Redpanda stack running; fails if unreachable
+.venv/Scripts/python.exe -m pytest -m snowflake            # live Snowflake checks as STREAMFORGE_ROLE (reads .env, no warehouse)
+.venv/Scripts/python.exe -m streamforge.admin.snowflake_setup verify   # full Snowflake verification (~0.017 credits)
 docker compose -f infra/docker-compose.yml up -d --wait    # start Redpanda + create topics
 docker compose -f infra/docker-compose.yml down [-v]       # stop (-v also deletes broker data)
 .venv/Scripts/python.exe -m streamforge.producer --orders 100 [--seed 42 --start-time 2026-11-23T10:00:00Z] [--invalid-rate 0.05]   # publish to Redpanda
@@ -46,8 +52,8 @@ docker compose -f infra/docker-compose.yml down [-v]       # stop (-v also delet
 ## Configuration
 
 - All settings come from environment variables via `streamforge.common.config` (`load_kafka_settings()`, `load_snowflake_settings()`); each component loads only what it needs. `.env.example` documents every variable; `.env` and `*.p8`/`*.pem` are gitignored.
-- Snowflake auth is exactly one of key-pair (`SNOWFLAKE_PRIVATE_KEY_PATH`, preferred) or `SNOWFLAKE_PASSWORD` (password/PAT). Secret fields are `repr=False` and `ConfigError` messages name variables but never echo values — keep it that way.
-- Loaders accept an explicit `env` mapping; tests must pass one (or chdir to a tmp dir) so they never read the developer's real `.env`.
+- Snowflake auth is exactly one of `SNOWFLAKE_TOKEN` (PAT → connector `authenticator="PROGRAMMATIC_ACCESS_TOKEN"`, `token`), `SNOWFLAKE_PRIVATE_KEY_PATH` (+ passphrase → `SNOWFLAKE_JWT`) or `SNOWFLAKE_PASSWORD`. Connect only via `streamforge.common.snowflake.connect()` / `connection_params()`: it maps settings to connector parameters and re-raises failures as `SnowflakeConnectionError` with secrets redacted and the exception chain suppressed. Secret fields are `repr=False` and `ConfigError` messages name variables but never echo values — keep it that way; never log the params dict.
+- Loaders accept an explicit `env` mapping; unit and Redpanda tests must pass one (or chdir to a tmp dir) so they never read the developer's real `.env`. Only `-m snowflake` tests read the real `.env`.
 
 ## Intended architecture
 
