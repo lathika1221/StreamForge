@@ -229,3 +229,8 @@ __marimo__/
 # StreamForge: environment file variants (the template stays tracked)
 .env.*
 !.env.example
+
+# StreamForge: dbt (M6) - separate virtualenv and build artefacts
+.venv-dbt/
+dbt/target/
+dbt/logs/

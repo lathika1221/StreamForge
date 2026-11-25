@@ -70,7 +70,7 @@ Three primary data layers:
 Implemented in M4 as database `ECOMMERCE_STREAMING_DB` (schemas `RAW`, `STAGING`, `ANALYTICS`, plus `OPS` for load audit and reconciliation), the XS warehouse `STREAMFORGE_WH` (60 s auto-suspend) capped by the `STREAMFORGE_MONITOR` resource monitor (5 credits per month), and the least-privilege role `STREAMFORGE_ROLE`. See `docs/snowflake.md`.
 
 ### 3.6 Transformation Layer
-Uses SQL and dbt for deduplication, incremental transformations, and analytical modelling.
+Uses SQL and dbt for deduplication, incremental transformations, and analytical modelling. Implemented in `dbt/` (dbt Core 1.12, separate `.venv-dbt`): STAGING views deduplicate events by `event_id`; ANALYTICS holds `fct_order_events` and `fct_orders` (incremental merge; order status follows `sequence_number`, not arrival order), `fct_order_items` and the daily per-currency aggregates; OPS views reconcile RAW against the consumer audit and report anomalies. See `docs/dbt.md`.
 
 ### 3.7 Dashboard
 Uses Streamlit to present order metrics, revenue trends, payment performance, and fulfilment insights.

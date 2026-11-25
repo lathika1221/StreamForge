@@ -1,0 +1,102 @@
+version: 2
+
+models:
+  - name: stg_order_created
+    description: order_created events, deduplicated by event_id (earliest ingested copy).
+    data_tests:
+      - expression_is_true:
+          arguments:
+            expression: "order_total > 0 and item_count > 0"
+    columns:
+      - name: event_id
+        data_tests: [unique, not_null]
+      - name: order_id
+        data_tests: [not_null]
+      - name: customer_id
+        data_tests: [not_null]
+      - name: currency
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ["INR", "GBP", "EUR", "USD"]
+
+  - name: stg_payment_processed
+    description: payment_processed events, deduplicated by event_id.
+    data_tests:
+      - expression_is_true:
+          arguments:
+            expression: "amount >= 0"
+      - expression_is_true:
+          arguments:
+            expression: "(payment_status = 'failed') = (failure_reason is not null)"
+    columns:
+      - name: event_id
+        data_tests: [unique, not_null]
+      - name: currency
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ["INR", "GBP", "EUR", "USD"]
+      - name: payment_method
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ["card", "paypal", "bank_transfer"]
+      - name: payment_status
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ["succeeded", "failed"]
+      - name: failure_reason
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ["insufficient_funds", "card_declined", "fraud_suspected"]
+
+  - name: stg_order_cancelled
+    description: order_cancelled events, deduplicated by event_id.
+    columns:
+      - name: event_id
+        data_tests: [unique, not_null]
+      - name: cancellation_reason
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ["customer_request", "payment_failed", "out_of_stock"]
+      - name: cancelled_by
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ["customer", "system"]
+
+  - name: stg_shipment_dispatched
+    description: shipment_dispatched events, deduplicated by event_id.
+    columns:
+      - name: event_id
+        data_tests: [unique, not_null]
+      - name: carrier
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ["DHL", "UPS", "FedEx", "Royal Mail"]
+      - name: estimated_delivery_date
+        data_tests: [not_null]
+
+  - name: stg_order_items
+    description: Order lines flattened from order_created.payload.items.
+    data_tests:
+      - unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [order_id, line_number]
+      - expression_is_true:
+          arguments:
+            expression: "quantity > 0 and unit_price > 0 and line_total = quantity * unit_price"
+    columns:
+      - name: sku
+        data_tests: [not_null]
+
+  - name: stg_order_events
+    description: All deduplicated events (lean shape) for lifecycle logic.
+    columns:
+      - name: event_id
+        data_tests: [unique, not_null]

@@ -1,0 +1,71 @@
+version: 2
+
+models:
+  - name: ops_ingestion_reconciliation
+    description: Consumer audit vs. RAW rows per batch; invalid records appear as dlq_records.
+    columns:
+      - name: batch_id
+        data_tests: [unique, not_null]
+
+  - name: ops_order_anomalies
+    description: One row per (order, anomaly); reported by warn-level tests.
+    columns:
+      - name: anomaly
+        data_tests:
+          - accepted_values:
+              arguments:
+                values:
+                  - missing_order_created
+                  - sequence_gap
+                  - shipped_without_successful_payment
+                  - cancelled_and_shipped
+                  - payment_amount_mismatch
+                  - currency_mismatch
+                  - conflicting_duplicate_event
+
+unit_tests:
+  - name: stg_order_created_keeps_earliest_copy_of_duplicate_event
+    description: The same event_id stored at two Kafka positions yields one row, the earliest ingested.
+    model: stg_order_created
+    given:
+      - input: source('raw', 'order_created')
+        rows:
+          - {event_id: E1, order_id: O1, sequence_number: 1, event_timestamp: "2026-11-25 10:00:00 +0000", ingested_at: "2026-11-25 10:00:05 +0000", kafka_topic: t, kafka_partition: 0, kafka_offset: 7, raw_value: "{}"}
+          - {event_id: E1, order_id: O1, sequence_number: 1, event_timestamp: "2026-11-25 10:00:00 +0000", ingested_at: "2026-11-25 12:00:00 +0000", kafka_topic: t, kafka_partition: 1, kafka_offset: 3, raw_value: "{}"}
+          - {event_id: E2, order_id: O2, sequence_number: 1, event_timestamp: "2026-11-25 10:01:00 +0000", ingested_at: "2026-11-25 10:01:05 +0000", kafka_topic: t, kafka_partition: 0, kafka_offset: 8, raw_value: "{}"}
+    expect:
+      rows:
+        - {event_id: E1, kafka_partition: 0, kafka_offset: 7}
+        - {event_id: E2, kafka_partition: 0, kafka_offset: 8}
+
+  - name: ops_order_anomalies_flags_conflicts_and_lifecycle_issues
+    description: >
+      A conflicting duplicate (same event_id, different content) and lifecycle anomalies
+      are reported; a clean order produces no rows.
+    model: ops_order_anomalies
+    given:
+      - input: ref('fct_orders')
+        rows:
+          - {order_id: CLEAN, has_order_created: true, has_sequence_gap: false, event_count: 3, latest_sequence_number: 3, payment_status: succeeded, shipped_at_utc: "2026-11-25 10:00:00 +0000", payment_amount_matches: true, currency: INR, payment_currency: INR}
+          - {order_id: NOCREATE, has_order_created: false, has_sequence_gap: true, event_count: 2, latest_sequence_number: 3, payment_status: failed, shipped_at_utc: "2026-11-25 10:00:00 +0000"}
+          - {order_id: BOTH, has_order_created: true, has_sequence_gap: false, event_count: 4, latest_sequence_number: 4, payment_status: succeeded, cancelled_at_utc: "2026-11-25 10:00:00 +0000", shipped_at_utc: "2026-11-25 10:01:00 +0000", payment_amount_matches: false, order_total: 10.00, payment_amount: 9.00, currency: INR, payment_currency: INR}
+      - input: source('raw', 'order_created')
+        rows:
+          - {event_id: X1, order_id: CONFLICT, raw_value: '{"v":1}'}
+          - {event_id: X1, order_id: CONFLICT, raw_value: '{"v":2}'}
+          - {event_id: X2, order_id: CLEAN, raw_value: '{"v":1}'}
+          - {event_id: X2, order_id: CLEAN, raw_value: '{"v":1}'}
+      - input: source('raw', 'payment_processed')
+        rows: []
+      - input: source('raw', 'order_cancelled')
+        rows: []
+      - input: source('raw', 'shipment_dispatched')
+        rows: []
+    expect:
+      rows:
+        - {order_id: NOCREATE, anomaly: missing_order_created}
+        - {order_id: NOCREATE, anomaly: sequence_gap}
+        - {order_id: NOCREATE, anomaly: shipped_without_successful_payment}
+        - {order_id: BOTH, anomaly: cancelled_and_shipped}
+        - {order_id: BOTH, anomaly: payment_amount_mismatch}
+        - {order_id: CONFLICT, anomaly: conflicting_duplicate_event}

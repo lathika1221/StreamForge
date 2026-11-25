@@ -6,7 +6,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 StreamForge is an event-driven e-commerce data engineering platform (Python, Redpanda, SQL, Snowflake). MVP deadline: 2026-11-26. Agreed MVP scope excludes Airflow, S3 archival, Snowflake Streams/Tasks and required CI (kept as roadmap). Work proceeds milestone by milestone (M0 packaging/config → M1 schema+simulator → M2 Redpanda → M3 producer → M4 Snowflake setup → M5 consumer → M6 dbt → M7 Streamlit → M8 demo); the user approves each milestone before the next starts.
 
-Done: M0 (packaging + `streamforge.common.config`), M1 (event contract + simulator), M2 (local Redpanda via Docker Compose), M3 (Kafka producer), M4 (Snowflake database/warehouse/role/monitor), M5 (consumer → Snowflake RAW + DLQ; code complete, live consumption pending an approved offset boundary). dbt and dashboard are not implemented yet.
+Done: M0 (packaging + `streamforge.common.config`), M1 (event contract + simulator), M2 (local Redpanda via Docker Compose), M3 (Kafka producer), M4 (Snowflake database/warehouse/role/monitor), M5 (consumer → Snowflake RAW + DLQ; live since 2026-11-25, group `streamforge-consumer` started at boundary 48/48/47). M6 (dbt in `dbt/`) is written; the dashboard is not implemented yet.
+
+## dbt
+
+`dbt/` (`docs/dbt.md`) runs from its own virtualenv `.venv-dbt` (pinned `dbt/requirements.txt`; never install dbt into `.venv` — it downgrades `python-dateutil`). Always invoke via `dbt/run_dbt.py` (loads `.env`, passes the key passphrase only as `DBT_ENV_SECRET_*`, refuses roles other than STREAMFORGE_ROLE, key-pair only). `profiles.yml` must stay env_var-only. Models: STAGING views dedupe by `event_id` (earliest ingested copy); `fct_order_events`/`fct_orders` are incremental merges (`fct_orders` recomputes touched orders from full history; status follows `sequence_number`, never arrival order; orders without `order_created` are kept and flagged); aggregates never sum across currencies; only payload attributes exist (customer_id only; sku/product_name/unit_price only). Every model pre-hook disables secondary roles and sets UTC; on-run-start asserts the role. No dbt packages: local generic tests in `dbt/tests/generic/`. RAW timestamps carry mixed offsets — always use the `to_utc()` macro before deriving dates.
 
 ## Consumer
 
@@ -49,6 +53,8 @@ docker compose -f infra/docker-compose.yml up -d --wait    # start Redpanda + cr
 docker compose -f infra/docker-compose.yml down [-v]       # stop (-v also deletes broker data)
 .venv/Scripts/python.exe -m streamforge.producer --orders 100 [--seed 42 --start-time 2026-11-23T10:00:00Z] [--invalid-rate 0.05]   # publish to Redpanda
 .venv/Scripts/python.exe -m streamforge.consumer --stop-when-idle 30   # Kafka -> Snowflake RAW (+DLQ); needs committed group offsets
+.venv-dbt/Scripts/python.exe dbt/run_dbt.py build          # dbt models + tests (one XS resume, ~0.03-0.05 credits)
+.venv/Scripts/python.exe -m ruff check src tests dbt/run_dbt.py
 .venv/Scripts/python.exe -m ruff check src tests
 .venv/Scripts/python.exe -m ruff format src tests
 .venv/Scripts/python.exe -m streamforge.producer.simulator --orders 10 --seed 42 --start-time 2026-11-23T10:00:00Z [--invalid-rate 0.1]   # JSONL to stdout, no Kafka

@@ -1,0 +1,41 @@
+# StreamForge dbt project (M6): RAW -> STAGING (views) -> ANALYTICS (tables) + OPS checks.
+# Run through dbt/run_dbt.py (loads .env, secret-prefixes the key passphrase, refuses admin roles).
+name: streamforge
+version: "1.0.0"
+config-version: 2
+profile: streamforge
+
+model-paths: ["models"]
+macro-paths: ["macros"]
+test-paths: ["tests"]
+target-path: target
+clean-targets: ["target"]
+
+flags:
+  send_anonymous_usage_stats: false
+
+# Fails the run unless the session role is STREAMFORGE_ROLE; disables secondary roles.
+on-run-start:
+  - "{{ streamforge_assert_session() }}"
+
+vars:
+  # Incremental models re-read events ingested this many hours before their watermark,
+  # so late or out-of-order arrivals are always merged.
+  incremental_lookback_hours: 1
+
+models:
+  streamforge:
+    # Every model's session: no secondary roles (the user defaults to ALL), UTC clock.
+    # Two single-statement hooks (Snowflake rejects multi-statement calls by default).
+    +pre-hook:
+      - "use secondary roles none"
+      - "alter session set timezone = 'UTC'"
+    staging:
+      +schema: STAGING
+      +materialized: view
+    analytics:
+      +schema: ANALYTICS
+      +materialized: table
+    ops:
+      +schema: OPS
+      +materialized: view

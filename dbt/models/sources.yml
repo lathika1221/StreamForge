@@ -1,0 +1,57 @@
+version: 2
+
+sources:
+  - name: raw
+    description: >
+      Append-only events written by the M5 consumer (one table per event type). Rows are
+      unique per Kafka message (topic, partition, offset); the same event_id can appear at
+      several offsets if it was published more than once.
+    database: ECOMMERCE_STREAMING_DB
+    schema: RAW
+    config:
+      loaded_at_field: INGESTED_AT
+      freshness:
+        warn_after: {count: 24, period: hour}  # warn only: an idle demo is not an error
+    tables:
+      - name: order_created
+        identifier: ORDER_CREATED
+        data_tests: &raw_kafka_position_unique
+          - unique_combination_of_columns:
+              arguments:
+                combination_of_columns: [kafka_topic, kafka_partition, kafka_offset]
+        columns: &raw_columns
+          - name: event_id
+            data_tests: [not_null]
+          - name: order_id
+            data_tests: [not_null]
+          - name: sequence_number
+            data_tests: [not_null]
+          - name: event_type
+            data_tests:
+              - accepted_values:
+                  arguments:
+                    values: ["order_created", "payment_processed", "order_cancelled", "shipment_dispatched"]
+      - name: payment_processed
+        identifier: PAYMENT_PROCESSED
+        data_tests: *raw_kafka_position_unique
+        columns: *raw_columns
+      - name: order_cancelled
+        identifier: ORDER_CANCELLED
+        data_tests: *raw_kafka_position_unique
+        columns: *raw_columns
+      - name: shipment_dispatched
+        identifier: SHIPMENT_DISPATCHED
+        data_tests: *raw_kafka_position_unique
+        columns: *raw_columns
+
+  - name: ops
+    description: Operational tables written by the M5 consumer.
+    database: ECOMMERCE_STREAMING_DB
+    schema: OPS
+    tables:
+      - name: ingestion_batches
+        identifier: INGESTION_BATCHES
+        description: One audit row per batch loaded into RAW (written in the same transaction).
+        columns:
+          - name: batch_id
+            data_tests: [not_null, unique]

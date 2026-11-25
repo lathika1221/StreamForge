@@ -1,0 +1,21 @@
+# dbt connection profile for StreamForge. Contains NO secrets: every value comes from the
+# environment prepared by dbt/run_dbt.py from the repo's .env. The key passphrase is passed
+# as DBT_ENV_SECRET_*, which dbt scrubs from its logs. Key-pair (JWT) authentication.
+streamforge:
+  target: dev
+  outputs:
+    dev:
+      type: snowflake
+      account: "{{ env_var('SNOWFLAKE_ACCOUNT') }}"
+      user: "{{ env_var('SNOWFLAKE_USER') }}"
+      role: "{{ env_var('SNOWFLAKE_ROLE') }}"
+      warehouse: "{{ env_var('SNOWFLAKE_WAREHOUSE') }}"
+      database: "{{ env_var('SNOWFLAKE_DATABASE') }}"
+      schema: STAGING
+      private_key_path: "{{ env_var('SNOWFLAKE_PRIVATE_KEY_PATH') }}"
+      private_key_passphrase: "{{ env_var('DBT_ENV_SECRET_SNOWFLAKE_PRIVATE_KEY_PASSPHRASE') }}"
+      threads: 1
+      client_session_keep_alive: false
+      query_tag: streamforge-dbt
+      connect_retries: 1
+      connect_timeout: 30

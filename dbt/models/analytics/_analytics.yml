@@ -1,0 +1,189 @@
+version: 2
+
+models:
+  - name: fct_order_events
+    description: One row per deduplicated event (incremental merge on event_id).
+    columns:
+      - name: event_id
+        data_tests: [unique, not_null]
+      - name: order_id
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('fct_orders')
+                field: order_id
+
+  - name: fct_orders
+    description: >
+      One row per order, from all of its events. current_status follows the highest
+      sequence_number. Orders are kept even if their order_created event is missing.
+    columns:
+      - name: order_id
+        data_tests: [unique, not_null]
+      - name: current_status
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ["awaiting_payment", "paid", "payment_failed", "cancelled", "shipped"]
+      - name: event_count
+        data_tests: [not_null]
+
+  - name: fct_order_items
+    description: One row per order line with the order's currency, date and outcome.
+    data_tests:
+      - unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [order_id, line_number]
+    columns:
+      - name: order_id
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('fct_orders')
+                field: order_id
+
+  - name: agg_daily_orders
+    description: Daily order metrics per currency (UTC order date); never mixes currencies.
+    data_tests:
+      - unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [order_date, currency]
+      - expression_is_true:
+          arguments:
+            expression: >-
+              orders_paid + orders_payment_failed <= orders_created
+              and orders_cancelled <= orders_created and orders_shipped <= orders_created
+              and net_revenue <= paid_value and paid_value <= gross_order_value
+              and payment_success_rate between 0 and 1 and cancellation_rate between 0 and 1
+
+  - name: agg_daily_product_sales
+    description: Daily sales per sku and currency.
+    data_tests:
+      - unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [order_date, sku, currency]
+      - expression_is_true:
+          arguments:
+            expression: "units > 0 and net_value <= gross_value"
+
+unit_tests:
+  - name: fct_orders_lifecycle_ordering_and_missing_events
+    description: >
+      O1: shipment ingested before the payment (out-of-order arrival) -> still 'shipped'.
+      O2: failed payment then cancellation -> 'cancelled', payment_status 'failed'.
+      O3: order_created never arrived -> kept, has_order_created false, status from its
+      latest event, sequence gap flagged.
+    model: fct_orders
+    overrides:
+      macros:
+        is_incremental: false
+    given:
+      - input: ref('fct_order_events')
+        rows:
+          - {event_id: e11, order_id: O1, event_type: order_created, sequence_number: 1, event_timestamp_utc: "2026-11-25 10:00:00 +0000", ingested_at_utc: "2026-11-25 10:00:03 +0000", kafka_partition: 0, kafka_offset: 10}
+          - {event_id: e13, order_id: O1, event_type: shipment_dispatched, sequence_number: 3, event_timestamp_utc: "2026-11-25 10:05:00 +0000", ingested_at_utc: "2026-11-25 10:00:04 +0000", kafka_partition: 0, kafka_offset: 11}
+          - {event_id: e12, order_id: O1, event_type: payment_processed, sequence_number: 2, event_timestamp_utc: "2026-11-25 10:00:10 +0000", ingested_at_utc: "2026-11-25 10:09:00 +0000", kafka_partition: 0, kafka_offset: 12}
+          - {event_id: e21, order_id: O2, event_type: order_created, sequence_number: 1, event_timestamp_utc: "2026-11-25 11:00:00 +0000", ingested_at_utc: "2026-11-25 11:00:01 +0000", kafka_partition: 1, kafka_offset: 20}
+          - {event_id: e22, order_id: O2, event_type: payment_processed, sequence_number: 2, event_timestamp_utc: "2026-11-25 11:00:10 +0000", ingested_at_utc: "2026-11-25 11:00:11 +0000", kafka_partition: 1, kafka_offset: 21}
+          - {event_id: e23, order_id: O2, event_type: order_cancelled, sequence_number: 3, event_timestamp_utc: "2026-11-25 11:02:00 +0000", ingested_at_utc: "2026-11-25 11:02:01 +0000", kafka_partition: 1, kafka_offset: 22}
+          - {event_id: e32, order_id: O3, event_type: payment_processed, sequence_number: 2, event_timestamp_utc: "2026-11-25 12:00:10 +0000", ingested_at_utc: "2026-11-25 12:00:11 +0000", kafka_partition: 2, kafka_offset: 30}
+          - {event_id: e33, order_id: O3, event_type: shipment_dispatched, sequence_number: 3, event_timestamp_utc: "2026-11-25 12:05:00 +0000", ingested_at_utc: "2026-11-25 12:05:01 +0000", kafka_partition: 2, kafka_offset: 31}
+      - input: ref('stg_order_created')
+        rows:
+          - {event_id: e11, order_id: O1, sequence_number: 1, event_timestamp_utc: "2026-11-25 10:00:00 +0000", kafka_partition: 0, kafka_offset: 10, customer_id: CUST-000001, currency: INR, order_total: 100.00, item_count: 1, shipping_country: IN}
+          - {event_id: e21, order_id: O2, sequence_number: 1, event_timestamp_utc: "2026-11-25 11:00:00 +0000", kafka_partition: 1, kafka_offset: 20, customer_id: CUST-000002, currency: INR, order_total: 250.00, item_count: 2, shipping_country: IN}
+      - input: ref('stg_payment_processed')
+        rows:
+          - {event_id: e12, order_id: O1, sequence_number: 2, event_timestamp_utc: "2026-11-25 10:00:10 +0000", kafka_partition: 0, kafka_offset: 12, amount: 100.00, currency: INR, payment_method: card, payment_status: succeeded}
+          - {event_id: e22, order_id: O2, sequence_number: 2, event_timestamp_utc: "2026-11-25 11:00:10 +0000", kafka_partition: 1, kafka_offset: 21, amount: 250.00, currency: INR, payment_method: card, payment_status: failed, failure_reason: card_declined}
+          - {event_id: e32, order_id: O3, sequence_number: 2, event_timestamp_utc: "2026-11-25 12:00:10 +0000", kafka_partition: 2, kafka_offset: 30, amount: 75.00, currency: INR, payment_method: paypal, payment_status: succeeded}
+      - input: ref('stg_order_cancelled')
+        rows:
+          - {event_id: e23, order_id: O2, sequence_number: 3, event_timestamp_utc: "2026-11-25 11:02:00 +0000", cancellation_reason: payment_failed, cancelled_by: system}
+      - input: ref('stg_shipment_dispatched')
+        rows:
+          - {event_id: e13, order_id: O1, sequence_number: 3, event_timestamp_utc: "2026-11-25 10:05:00 +0000", carrier: DHL, estimated_delivery_date: "2026-11-27"}
+          - {event_id: e33, order_id: O3, sequence_number: 3, event_timestamp_utc: "2026-11-25 12:05:00 +0000", carrier: UPS, estimated_delivery_date: "2026-11-28"}
+    expect:
+      rows:
+        - {order_id: O1, current_status: shipped, payment_status: succeeded, has_order_created: true, has_sequence_gap: false, is_terminal: true, payment_amount_matches: true, event_count: 3, latest_sequence_number: 3}
+        - {order_id: O2, current_status: cancelled, payment_status: failed, has_order_created: true, has_sequence_gap: false, is_terminal: true, payment_amount_matches: true, event_count: 3, latest_sequence_number: 3}
+        - {order_id: O3, current_status: shipped, payment_status: succeeded, has_order_created: false, has_sequence_gap: true, is_terminal: true, payment_amount_matches: null, event_count: 2, latest_sequence_number: 3}
+
+  - name: fct_order_events_incremental_window_uses_arrival_time
+    description: >
+      Incremental run with watermark 12:00 and a 1-hour look-back: an event ingested at
+      10:30 (already processed) is skipped; one ingested at 11:30 (inside the look-back,
+      e.g. a transaction that committed late) and one at 12:30 (new) are merged.
+    model: fct_order_events
+    overrides:
+      macros:
+        is_incremental: true
+    given:
+      - input: this
+        rows:
+          - {event_id: existing, order_id: O0, ingested_at_utc: "2026-11-25 12:00:00 +0000"}
+      - input: ref('stg_order_events')
+        rows:
+          - {event_id: before_window, order_id: O1, ingested_at_utc: "2026-11-25 10:30:00 +0000"}
+          - {event_id: in_lookback, order_id: O1, ingested_at_utc: "2026-11-25 11:30:00 +0000"}
+          - {event_id: new_arrival, order_id: O2, ingested_at_utc: "2026-11-25 12:30:00 +0000"}
+    expect:
+      rows:
+        - {event_id: in_lookback}
+        - {event_id: new_arrival}
+
+  - name: fct_orders_late_event_recomputes_order_from_full_history
+    description: >
+      Incremental run (watermark 12:00). O1 was 'paid'; its shipment arrives late (business
+      time 08:30, ingested 12:30). Only O1 is touched and it is rebuilt from ALL its events
+      (event_count 3, status shipped). O2 has no new events and is not recomputed.
+    model: fct_orders
+    overrides:
+      macros:
+        is_incremental: true
+    given:
+      - input: this
+        rows:
+          - {order_id: O1, current_status: paid, last_ingested_at_utc: "2026-11-25 12:00:00 +0000"}
+          - {order_id: O2, current_status: paid, last_ingested_at_utc: "2026-11-25 09:00:00 +0000"}
+      - input: ref('fct_order_events')
+        rows:
+          - {event_id: o1c, order_id: O1, event_type: order_created, sequence_number: 1, event_timestamp_utc: "2026-11-25 08:00:00 +0000", ingested_at_utc: "2026-11-25 08:00:01 +0000", kafka_partition: 0, kafka_offset: 1}
+          - {event_id: o1p, order_id: O1, event_type: payment_processed, sequence_number: 2, event_timestamp_utc: "2026-11-25 08:01:00 +0000", ingested_at_utc: "2026-11-25 08:01:01 +0000", kafka_partition: 0, kafka_offset: 2}
+          - {event_id: o1s, order_id: O1, event_type: shipment_dispatched, sequence_number: 3, event_timestamp_utc: "2026-11-25 08:30:00 +0000", ingested_at_utc: "2026-11-25 12:30:00 +0000", kafka_partition: 0, kafka_offset: 9}
+          - {event_id: o2c, order_id: O2, event_type: order_created, sequence_number: 1, event_timestamp_utc: "2026-11-25 09:00:00 +0000", ingested_at_utc: "2026-11-25 09:00:01 +0000", kafka_partition: 1, kafka_offset: 1}
+          - {event_id: o2p, order_id: O2, event_type: payment_processed, sequence_number: 2, event_timestamp_utc: "2026-11-25 09:01:00 +0000", ingested_at_utc: "2026-11-25 09:01:01 +0000", kafka_partition: 1, kafka_offset: 2}
+      - input: ref('stg_order_created')
+        rows:
+          - {event_id: o1c, order_id: O1, sequence_number: 1, event_timestamp_utc: "2026-11-25 08:00:00 +0000", kafka_partition: 0, kafka_offset: 1, customer_id: CUST-000001, currency: INR, order_total: 500.00, item_count: 1, shipping_country: IN}
+          - {event_id: o2c, order_id: O2, sequence_number: 1, event_timestamp_utc: "2026-11-25 09:00:00 +0000", kafka_partition: 1, kafka_offset: 1, customer_id: CUST-000002, currency: INR, order_total: 80.00, item_count: 1, shipping_country: IN}
+      - input: ref('stg_payment_processed')
+        rows:
+          - {event_id: o1p, order_id: O1, sequence_number: 2, event_timestamp_utc: "2026-11-25 08:01:00 +0000", kafka_partition: 0, kafka_offset: 2, amount: 500.00, currency: INR, payment_method: card, payment_status: succeeded}
+          - {event_id: o2p, order_id: O2, sequence_number: 2, event_timestamp_utc: "2026-11-25 09:01:00 +0000", kafka_partition: 1, kafka_offset: 2, amount: 80.00, currency: INR, payment_method: card, payment_status: succeeded}
+      - input: ref('stg_order_cancelled')
+        rows: []
+      - input: ref('stg_shipment_dispatched')
+        rows:
+          - {event_id: o1s, order_id: O1, sequence_number: 3, event_timestamp_utc: "2026-11-25 08:30:00 +0000", carrier: DHL, estimated_delivery_date: "2026-11-28"}
+    expect:
+      rows:
+        - {order_id: O1, current_status: shipped, event_count: 3, latest_sequence_number: 3, has_order_created: true, has_sequence_gap: false, order_total: 500.00, payment_status: succeeded, last_ingested_at_utc: "2026-11-25 12:30:00 +0000"}
+
+  - name: agg_daily_orders_never_mixes_currencies
+    description: Two currencies on the same day give two rows with separate totals.
+    model: agg_daily_orders
+    given:
+      - input: ref('fct_orders')
+        rows:
+          - {order_id: A, has_order_created: true, order_date: "2026-11-25", currency: INR, order_total: 1000.00, payment_status: succeeded, current_status: shipped, shipped_at_utc: "2026-11-25 10:00:00 +0000"}
+          - {order_id: B, has_order_created: true, order_date: "2026-11-25", currency: INR, order_total: 500.00, payment_status: succeeded, current_status: cancelled, cancelled_at_utc: "2026-11-25 11:00:00 +0000"}
+          - {order_id: C, has_order_created: true, order_date: "2026-11-25", currency: GBP, order_total: 20.00, payment_status: failed, current_status: payment_failed}
+          - {order_id: D, has_order_created: false, order_date: null, currency: null, order_total: null, payment_status: succeeded, current_status: shipped}
+    expect:
+      rows:
+        - {order_date: "2026-11-25", currency: INR, orders_created: 2, orders_paid: 2, orders_payment_failed: 0, orders_cancelled: 1, orders_shipped: 1, gross_order_value: 1500.00, paid_value: 1500.00, net_revenue: 1000.00, payment_success_rate: 1.0000, cancellation_rate: 0.5000}
+        - {order_date: "2026-11-25", currency: GBP, orders_created: 1, orders_paid: 0, orders_payment_failed: 1, orders_cancelled: 0, orders_shipped: 0, gross_order_value: 20.00, paid_value: 0.00, net_revenue: 0.00, payment_success_rate: 0.0000, cancellation_rate: 0.0000}

@@ -1,0 +1,6 @@
+# dbt for StreamForge (M6). Installed into the separate .venv-dbt, never the main .venv
+# (dbt-snowflake would downgrade python-dateutil there). Pinned stable releases that are
+# at least two weeks old: dbt-core 1.12.6 (2026-10-14), dbt-snowflake 1.12.5 (2026-11-04).
+dbt-core==1.12.6
+dbt-snowflake==1.12.5
+python-dotenv>=1.0
