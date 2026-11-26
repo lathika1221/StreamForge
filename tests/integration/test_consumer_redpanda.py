@@ -11,6 +11,7 @@ Run with: python -m pytest -m integration
 import dataclasses
 import os
 import uuid
+from datetime import UTC, datetime
 
 import pytest
 from confluent_kafka import Consumer, Producer, TopicPartition
@@ -27,6 +28,12 @@ from streamforge.producer.simulator import EventSimulator, SimulatorConfig
 pytestmark = pytest.mark.integration
 
 FAILURE_TYPES = {"empty_value", "malformed_json", "missing_field", "schema_validation"}
+# Fixed simulator input. With seed 2 the order_id-keyed records land on every partition
+# (9/14/8 with the client's default CRC32 key partitioner); its 5 null-key invalid records
+# are spread at random by the client but cannot leave a partition empty. An unseeded
+# simulator could leave a partition empty, which made the commit assertion flaky.
+SEED = 2
+START = datetime(2026, 11, 23, 10, tzinfo=UTC)
 
 
 class MemorySink:
@@ -73,7 +80,8 @@ def env():
 
 def _publish(env):
     """Fresh valid + invalid records, plus a tombstone and non-UTF-8 bytes."""
-    records = list(EventSimulator(SimulatorConfig(invalid_rate=0.4)).iter_records(8))
+    config = SimulatorConfig(seed=SEED, start_time=START, invalid_rate=0.4)
+    records = list(EventSimulator(config).iter_records(8))
     publisher = EventPublisher(Producer(build_producer_config(env)), env.events_topic)
     publisher.publish_all(records)
     assert publisher.flush(30) == 0 and publisher.stats.ok
@@ -147,6 +155,22 @@ def _committed_and_ends(env):
     return {tp.partition: tp.offset for tp in committed}, ends
 
 
+def _assert_committed_at_partition_ends(env):
+    """Every partition that received records is committed exactly at its end offset.
+
+    A partition that received nothing has nothing to commit: the consumer never commits
+    it, so its committed offset stays "none" (negative, OFFSET_INVALID); 0 is accepted too.
+    """
+    committed, ends = _committed_and_ends(env)
+    assert committed.keys() == ends.keys()
+    for partition, end in ends.items():
+        if end == 0:
+            assert committed[partition] < 0 or committed[partition] == 0, (committed, ends)
+        else:
+            assert committed[partition] == end, (partition, committed, ends)
+    return committed, ends
+
+
 def _dlq_headers(msg):
     return {k: v.decode("utf-8") for k, v in msg.headers()}
 
@@ -193,9 +217,9 @@ def test_consume_route_commit_and_redelivery(env):
         )
     assert {m.key() for m in dlq} >= {b"tombstone", b"\x00\xffraw-key"}
 
-    # committed offsets are the next offsets = end of every partition
-    committed, ends = _committed_and_ends(env)
-    assert committed == ends
+    # committed offsets are the next offsets = end of every partition that has records
+    _, ends = _assert_committed_at_partition_ends(env)
+    assert all(end > 0 for end in ends.values())  # the fixed input covers all 3 partitions
 
     # a second run resumes from the committed offsets: nothing is reprocessed
     again = _run(env, sink)
@@ -241,5 +265,4 @@ def test_dlq_is_not_duplicated_when_snowflake_fails_and_consumer_restarts(env):
     assert stats.dlq == 0 and stats.dlq_already_present == n_invalid
     assert len(sink.rows) == sum(r.is_valid for r in published)
     assert len(_read_all(env.bootstrap_servers, env.dlq_topic)) == n_invalid  # no duplicates
-    committed, ends = _committed_and_ends(env)
-    assert committed == ends
+    _assert_committed_at_partition_ends(env)
