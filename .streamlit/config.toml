@@ -1,0 +1,22 @@
+# StreamForge dashboard (M7). Read by `streamlit run` from the repo root.
+# No secrets here (credentials come from .env via streamforge.common.config).
+
+[theme]
+base = "dark"
+primaryColor = "#3B82F6"
+backgroundColor = "#070D1A"
+secondaryBackgroundColor = "#0B1426"
+textColor = "#E6ECF5"
+font = "sans serif"
+
+[client]
+# Never show tracebacks in the browser (they could reveal internals).
+showErrorDetails = "none"
+toolbarMode = "minimal"
+
+[browser]
+# Do not send Streamlit usage statistics.
+gatherUsageStats = false
+
+[server]
+runOnSave = false

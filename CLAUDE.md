@@ -6,7 +6,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 StreamForge is an event-driven e-commerce data engineering platform (Python, Redpanda, SQL, Snowflake). MVP deadline: 2026-11-26. Agreed MVP scope excludes Airflow, S3 archival, Snowflake Streams/Tasks and required CI (kept as roadmap). Work proceeds milestone by milestone (M0 packaging/config → M1 schema+simulator → M2 Redpanda → M3 producer → M4 Snowflake setup → M5 consumer → M6 dbt → M7 Streamlit → M8 demo); the user approves each milestone before the next starts.
 
-Done: M0 (packaging + `streamforge.common.config`), M1 (event contract + simulator), M2 (local Redpanda via Docker Compose), M3 (Kafka producer), M4 (Snowflake database/warehouse/role/monitor), M5 (consumer → Snowflake RAW + DLQ; live since 2026-11-25, group `streamforge-consumer` started at boundary 48/48/47). M6 (dbt in `dbt/`) is written; the dashboard is not implemented yet.
+Done: M0 (packaging + `streamforge.common.config`), M1 (event contract + simulator), M2 (local Redpanda via Docker Compose), M3 (Kafka producer), M4 (Snowflake database/warehouse/role/monitor), M5 (consumer → Snowflake RAW + DLQ; live since 2026-11-25, group `streamforge-consumer` started at boundary 48/48/47). M6 (dbt in `dbt/`), M7 (Streamlit dashboard in `src/streamforge/dashboard/`). M8 (demo/benchmark) remains.
+
+## Dashboard
+
+`streamforge.dashboard` (`docs/dashboard.md`; run `streamlit run src/streamforge/dashboard/app.py` from the repo root so `.streamlit/config.toml` applies). Layers: `queries.py` (read-only SQL against ANALYTICS/OPS only, dates as bound `%s` params, money always grouped by currency), `metrics.py` (pure; rates recomputed from summed counts, never averaged; empty/null-safe), `data.py` (`SnowflakeRunner`: STREAMFORGE_ROLE only, errors scrubbed with `safe_error_text` + `redact`), `theme.py` (navy palette, `card()` HTML-escapes), `app.py` (Streamlit; `st.cache_data` ttl 600). Never sum money across currencies; never render data values as raw HTML (use `st.dataframe`/Altair). UI tests use `streamlit.testing.v1.AppTest` with `data.get_runner` monkeypatched; clear `st.cache_data`/`st.cache_resource` between tests.
 
 ## dbt
 
@@ -53,6 +57,7 @@ docker compose -f infra/docker-compose.yml up -d --wait    # start Redpanda + cr
 docker compose -f infra/docker-compose.yml down [-v]       # stop (-v also deletes broker data)
 .venv/Scripts/python.exe -m streamforge.producer --orders 100 [--seed 42 --start-time 2026-11-23T10:00:00Z] [--invalid-rate 0.05]   # publish to Redpanda
 .venv/Scripts/python.exe -m streamforge.consumer --stop-when-idle 30   # Kafka -> Snowflake RAW (+DLQ); needs committed group offsets
+.venv/Scripts/python.exe -m streamlit run src/streamforge/dashboard/app.py   # M7 dashboard (localhost)
 .venv-dbt/Scripts/python.exe dbt/run_dbt.py build          # dbt models + tests (one XS resume, ~0.03-0.05 credits)
 .venv/Scripts/python.exe -m ruff check src tests dbt/run_dbt.py
 .venv/Scripts/python.exe -m ruff check src tests

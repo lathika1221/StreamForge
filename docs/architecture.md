@@ -73,7 +73,7 @@ Implemented in M4 as database `ECOMMERCE_STREAMING_DB` (schemas `RAW`, `STAGING`
 Uses SQL and dbt for deduplication, incremental transformations, and analytical modelling. Implemented in `dbt/` (dbt Core 1.12, separate `.venv-dbt`): STAGING views deduplicate events by `event_id`; ANALYTICS holds `fct_order_events` and `fct_orders` (incremental merge; order status follows `sequence_number`, not arrival order), `fct_order_items` and the daily per-currency aggregates; OPS views reconcile RAW against the consumer audit and report anomalies. See `docs/dbt.md`.
 
 ### 3.7 Dashboard
-Uses Streamlit to present order metrics, revenue trends, payment performance, and fulfilment insights.
+Uses Streamlit to present order metrics, revenue trends, payment performance, and fulfilment insights. Implemented in `streamforge.dashboard` (`streamlit run src/streamforge/dashboard/app.py`): Executive Overview, Orders, Products, Geography and Pipeline Health tabs read the dbt ANALYTICS and OPS models read-only as STREAMFORGE_ROLE, show money per currency only, and cache query results for 10 minutes. See `docs/dashboard.md`.
 
 ### 3.8 Orchestration and Archival
 Airflow manages scheduled workflows and reconciliation. AWS S3 stores raw event archives.
