@@ -431,6 +431,13 @@ def main() -> None:
         f"{start:%d %b %Y} – {end:%d %b %Y}</div></div>",
         unsafe_allow_html=True,
     )
+    if getattr(_runner(), "is_demo", False):
+        st.warning(
+            "**Demo mode:** simulated data generated locally by the StreamForge simulator. "
+            "Nothing is read from Snowflake; figures approximate the dbt models and are "
+            "not real business data.",
+            icon="ℹ️",
+        )
     if daily is None:
         st.stop()
 

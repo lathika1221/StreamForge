@@ -1,5 +1,7 @@
 # Getting Started
 
+No Snowflake account? See [`demo.md`](demo.md) for the offline dashboard demo and the local pipeline demo.
+
 This guide runs the whole pipeline end to end on one machine, in this order:
 
 **Docker → Redpanda topics → Snowflake setup → consumer offset initialisation → producer → consumer → dbt → dashboard**
@@ -55,7 +57,7 @@ docker exec streamforge-redpanda rpk topic list          # ecommerce.events (3),
 
 The one-shot `redpanda-init` service creates both topics and disables topic auto-creation, so a misspelled topic name fails instead of creating a new topic. The broker listens on `localhost:19092` (loopback only). Details and troubleshooting: [`redpanda.md`](redpanda.md).
 
-Optional, free: `.venv/Scripts/python.exe -m pytest -m integration` runs the 20 Redpanda integration tests. They use temporary topics and groups only.
+Optional, free: `.venv/Scripts/python.exe -m pytest -m integration` runs the 21 Redpanda integration tests. They use temporary topics and groups only.
 
 ## 4. Create the Snowflake resources (one time)
 

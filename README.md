@@ -87,6 +87,21 @@ The consumer's commit protocol (sequence diagram), component details and impleme
 
 Each step is started by hand today; scheduling is on the roadmap.
 
+## Try it without Snowflake
+
+Two offline demos need no Snowflake account and no credentials (details in [`docs/demo.md`](docs/demo.md)):
+
+```
+# Dashboard on simulated data (Python only; a "Demo mode" banner is always shown)
+STREAMFORGE_DASHBOARD_DEMO=1 .venv/Scripts/python.exe -m streamlit run src/streamforge/dashboard/app.py
+
+# Producer -> Redpanda -> consumer -> DLQ + file-backed RAW, on temporary topics (needs Docker)
+docker compose -f infra/docker-compose.yml up -d --wait
+.venv/Scripts/python.exe -m streamforge.demo --orders 20 --invalid-rate 0.1
+```
+
+The dashboard demo derives its figures from the project's own deterministic simulator with pandas, approximating the dbt models; it is not dbt output. The pipeline demo runs the real producer, consumer and DLQ code and only swaps Snowflake RAW for JSON Lines files.
+
 ## Getting started
 
 The full, ordered walkthrough is in **[`docs/getting-started.md`](docs/getting-started.md)**: Docker → Redpanda topics → Snowflake setup → consumer offset initialisation → producer → consumer → dbt → dashboard. In short (Windows paths; run from the repository root):
@@ -112,17 +127,17 @@ Without a Snowflake account you can still run the simulator, the producer, Redpa
 
 | Suite | Command | Needs | Result (last local run, 2026-11-26) |
 |---|---|---|---|
-| Unit | `.venv/Scripts/python.exe -m pytest` | Nothing | **420 passed** |
-| Redpanda integration | `.venv/Scripts/python.exe -m pytest -m "integration and not snowflake"` | Local Redpanda | **20 passed** in 4 min 22 s |
+| Unit | `.venv/Scripts/python.exe -m pytest` | Nothing | **445 passed** |
+| Redpanda integration | `.venv/Scripts/python.exe -m pytest -m "integration and not snowflake"` | Local Redpanda | 21 tests: the 20 M5–M8 tests **passed** locally in 4 min 22 s and in CI; the M9.3 demo test runs in CI |
 | Live Snowflake | `.venv/Scripts/python.exe -m pytest -m snowflake` | Snowflake credentials | 8 tests; run by hand only, never in CI (about 0.017–0.034 credits) |
 | dbt | `.venv-dbt/Scripts/python.exe dbt/run_dbt.py build` | Snowflake | Data tests, singular tests, dbt unit tests |
 | Lint | `.venv/Scripts/python.exe -m ruff check src tests dbt/run_dbt.py` | Nothing | Clean |
 
 The integration suite includes **11 failure-injection scenarios** on temporary topics (Snowflake faked): broker unavailable at startup, DLQ delivery failure, Snowflake connection and transaction failures, a process killed after the RAW commit and after the DLQ delivery, duplicate delivery, graceful stop with uncommitted messages, replay of committed messages, per-partition offsets after a crash, and two consumers in one group. In each scenario the test checks that no record is lost, RAW and the DLQ hold no duplicates, and the committed offsets reach the partition ends. See [`docs/reliability.md`](docs/reliability.md).
 
-**Test separation.** Two pytest markers keep the suites apart: `integration` (20 tests, need a Redpanda broker) and `snowflake` (8 tests, need real credentials). A plain `pytest` deselects both and runs the 420 unit tests, which need no broker, no network and no credentials. Of the 8 Snowflake tests, the 5 in `test_snowflake.py` use no warehouse; `test_snowflake_sink_live.py` and `test_dashboard_live.py` each resume the XS warehouse once (about 0.017 credits each), so the whole marker costs about 0.017–0.034 credits.
+**Test separation.** Two pytest markers keep the suites apart: `integration` (21 tests, need a Redpanda broker) and `snowflake` (8 tests, need real credentials). A plain `pytest` deselects both and runs the 445 unit tests, which need no broker, no network and no credentials. Of the 8 Snowflake tests, the 5 in `test_snowflake.py` use no warehouse; `test_snowflake_sink_live.py` and `test_dashboard_live.py` each resume the XS warehouse once (about 0.017 credits each), so the whole marker costs about 0.017–0.034 credits.
 
-The results in the table come from local runs. **CI** ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs on pushes to `main`, pull requests and manual dispatch, on Ubuntu with Python 3.11 and the pinned versions, in three jobs: lint and unit tests, `dbt parse` (dummy values, no Snowflake connection), and the 20 Redpanda integration tests against an ephemeral broker. CI uses no secrets and excludes the `snowflake` marker in every pytest command.
+The results in the table come from local runs. **CI** ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs on pushes to `main`, pull requests and manual dispatch, on Ubuntu with Python 3.11 and the pinned versions, in three jobs: lint and unit tests, `dbt parse` (dummy values, no Snowflake connection), and the 21 Redpanda integration tests against an ephemeral broker. CI uses no secrets and excludes the `snowflake` marker in every pytest command.
 
 ## Dashboard
 
@@ -158,7 +173,7 @@ Details, metric definitions and costs: [`docs/dashboard.md`](docs/dashboard.md).
 
 ## Roadmap
 
-- An offline demo mode for the dashboard and screenshots.
+- Dashboard screenshots (captured from the demo mode, see [`docs/demo.md`](docs/demo.md#screenshots)).
 - A measured local throughput and latency benchmark.
 - Orchestration with Airflow, raw-event archival to S3, Snowflake Streams/Tasks.
 - Optional Kafka transactions to close the concurrent dead-letter race.
@@ -176,6 +191,7 @@ Details, metric definitions and costs: [`docs/dashboard.md`](docs/dashboard.md).
 | [`docs/reliability.md`](docs/reliability.md) | Failure handling, recovery scenarios, known limitations |
 | [`docs/snowflake.md`](docs/snowflake.md) | Snowflake resources, grants, authentication, costs |
 | [`docs/dbt.md`](docs/dbt.md) | Models, tests, metric definitions |
+| [`docs/demo.md`](docs/demo.md) | Offline dashboard demo mode and local pipeline demo |
 | [`docs/dashboard.md`](docs/dashboard.md) | Dashboard tabs, metrics, safety |
 
 ## License

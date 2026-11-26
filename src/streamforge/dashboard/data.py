@@ -100,6 +100,14 @@ class SnowflakeRunner:
                 self._conn = None
 
 
-def get_runner() -> SnowflakeRunner:
-    """Factory used by the app (tests replace it with a fake runner)."""
+def get_runner() -> Callable[[str, tuple], pd.DataFrame]:
+    """Factory used by the app (tests replace it with a fake runner).
+
+    With STREAMFORGE_DASHBOARD_DEMO switched on, returns the offline demo runner
+    (simulated data, see ``dashboard.demo``) and never creates a Snowflake connection.
+    """
+    from streamforge.dashboard import demo  # local import: demo imports this module's error
+
+    if demo.demo_enabled():
+        return demo.DemoRunner.build()
     return SnowflakeRunner.from_env()

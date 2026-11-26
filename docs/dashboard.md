@@ -8,6 +8,8 @@ A Streamlit dashboard over the dbt outputs (M6), with a dark navy theme and rest
 
 Run it from the repo root, so `.env` and `.streamlit/config.toml` are found. It needs no new dependencies (Streamlit, Altair and pandas are already in `.venv`) and no paid services.
 
+**Without Snowflake:** set `STREAMFORGE_DASHBOARD_DEMO=1` in the shell to run on simulated data with a visible "Demo mode" banner and no Snowflake connection. See [`demo.md`](demo.md#dashboard-demo-mode).
+
 ## Access and safety
 
 - **Snowflake access:** reads `ECOMMERCE_STREAMING_DB.ANALYTICS` and `OPS` as **STREAMFORGE_ROLE** with the existing key-pair settings from `.env`, through `streamforge.common.snowflake.connect()`, which disables secondary roles. The data layer refuses any other configured role and re-checks `CURRENT_ROLE()` after connecting.
