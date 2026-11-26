@@ -66,7 +66,7 @@ Run from the repo root (credentials come from `.env` and are never printed):
 .venv/Scripts/python.exe -m streamforge.admin.snowflake_setup plan     # show the SQL; runs nothing
 .venv/Scripts/python.exe -m streamforge.admin.snowflake_setup apply    # create/refresh resources, then verify
 .venv/Scripts/python.exe -m streamforge.admin.snowflake_setup verify   # verify only
-.venv/Scripts/python.exe -m pytest -m snowflake                         # live checks as STREAMFORGE_ROLE (no warehouse)
+.venv/Scripts/python.exe -m pytest -m snowflake                         # live checks as STREAMFORGE_ROLE (~0.017-0.034 credits, see below)
 ```
 
 `apply` needs the connecting user to hold `ACCOUNTADMIN`; the SQL switches roles itself, so `.env` keeps `STREAMFORGE_ROLE`. It is safe to re-run: every `CREATE` uses `IF NOT EXISTS`, and the warehouse settings are re-asserted with `ALTER`. Nothing is ever dropped or replaced.
@@ -87,7 +87,7 @@ Run from the repo root (credentials come from `.env` and are never printed):
   - No check objects are left behind, and the warehouse ends `SUSPENDED`.
   - `.env` uses `STREAMFORGE_ROLE`.
 
-Each `verify` run resumes the XS warehouse for one short query, which bills the 60-second minimum (about 0.017 credits). The `pytest -m snowflake` tests use no warehouse.
+Each `verify` run resumes the XS warehouse for one short query, which bills the 60-second minimum (about 0.017 credits). The `pytest -m snowflake` suite has 8 tests in three files. The M4 checks in `test_snowflake.py` (5 tests) use no warehouse: metadata, `SHOW` and DDL only. The M5 live sink test file `test_snowflake_sink_live.py` (2 tests) and the M7 dashboard test `test_dashboard_live.py` (1 test) each resume `STREAMFORGE_WH` and suspend it afterwards, about 0.017 credits each (60-second minimum), so the whole suite costs about 0.017–0.034 credits. CI never runs these tests.
 
 ## Cost controls and limitations
 

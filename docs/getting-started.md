@@ -21,11 +21,11 @@ Steps 1–3 and the unit and Redpanda tests are free. Steps 4 and 7–9 use Snow
 
 ```
 py -3.11 -m venv .venv
-.venv/Scripts/python.exe -m pip install -e ".[dev]"     # runtime deps + pytest and ruff
+.venv/Scripts/python.exe -m pip install -e ".[dev]" -c constraints.txt     # runtime deps + pytest and ruff, tested versions
 .venv/Scripts/python.exe -m pytest                       # unit tests only; no broker, no Snowflake
 ```
 
-`pytest` without a marker runs the unit tests only (`addopts` deselects `integration` and `snowflake`).
+`pytest` without a marker runs the unit tests only (`addopts` deselects `integration` and `snowflake`). `constraints.txt` pins every package to the versions the tests ran with; without `-c constraints.txt` pip picks the newest versions allowed by `pyproject.toml`.
 
 ## 2. Configure `.env`
 
@@ -111,7 +111,7 @@ dbt has its own virtualenv; installing it into `.venv` would downgrade `python-d
 
 ```
 py -3.11 -m venv .venv-dbt
-.venv-dbt/Scripts/python.exe -m pip install -r dbt/requirements.txt
+.venv-dbt/Scripts/python.exe -m pip install -r dbt/requirements.txt -c dbt/constraints.txt
 .venv-dbt/Scripts/python.exe dbt/run_dbt.py debug      # connection and profile check
 .venv-dbt/Scripts/python.exe dbt/run_dbt.py build      # models + data tests + unit tests
 ```

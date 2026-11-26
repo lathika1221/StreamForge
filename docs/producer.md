@@ -5,7 +5,7 @@
 ## Prerequisites
 
 1. The local broker is running: `docker compose -f infra/docker-compose.yml up -d --wait` (see `docs/redpanda.md`).
-2. The package is installed in `.venv`: `.venv/Scripts/python.exe -m pip install -e ".[dev]"`.
+2. The package is installed in `.venv`: `.venv/Scripts/python.exe -m pip install -e ".[dev]" -c constraints.txt`.
 3. Optionally, `.env` sets `KAFKA_BOOTSTRAP_SERVERS` and `KAFKA_EVENTS_TOPIC`. The defaults match the local stack, and no credentials are needed.
 
 ## Usage

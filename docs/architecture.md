@@ -34,7 +34,7 @@ Supporting infrastructure:
 | Snowflake Streams and Tasks | Roadmap |
 | Apache Airflow (scheduling) | Roadmap |
 | AWS S3 (raw event archival) | Roadmap |
-| GitHub Actions (continuous integration) | Roadmap |
+| GitHub Actions (continuous integration) | Implemented (`.github/workflows/ci.yml`): lint, unit tests, dbt parse, Redpanda integration tests; no Snowflake |
 
 ## 3. Core Components
 

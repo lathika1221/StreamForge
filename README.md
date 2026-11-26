@@ -1,5 +1,7 @@
 # StreamForge
 
+[![CI](https://github.com/lathika1221/StreamForge/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/lathika1221/StreamForge/actions/workflows/ci.yml)
+
 An event-driven e-commerce data engineering pipeline: simulated order events stream through **Redpanda (Kafka API)**, are validated and loaded into **Snowflake** by a Python consumer, transformed with **dbt**, and presented in a **Streamlit** dashboard.
 
 > **Status:** MVP complete (milestones M0–M8) and tested locally. It runs on a developer machine with a single-node broker and an XS warehouse; it is a portfolio project, not a deployed production service. Throughput has not been benchmarked yet. See [Limitations](#limitations).
@@ -91,7 +93,7 @@ The full, ordered walkthrough is in **[`docs/getting-started.md`](docs/getting-s
 
 ```
 py -3.11 -m venv .venv
-.venv/Scripts/python.exe -m pip install -e ".[dev]"
+.venv/Scripts/python.exe -m pip install -e ".[dev]" -c constraints.txt
 cp .env.example .env                                         # then fill in Snowflake settings
 docker compose -f infra/docker-compose.yml up -d --wait      # Redpanda + topics
 .venv/Scripts/python.exe -m streamforge.admin.snowflake_setup apply
@@ -104,19 +106,23 @@ docker exec streamforge-redpanda rpk group seek streamforge-consumer --to start 
 
 Without a Snowflake account you can still run the simulator, the producer, Redpanda and all unit and Redpanda integration tests.
 
+**Two environments, pinned versions.** The application (`.venv`) and dbt (`.venv-dbt`) live in separate virtualenvs, because dbt needs an older `python-dateutil` (2.9) than the application (4.0). `pyproject.toml` and `dbt/requirements.txt` say *what* is installed; the constraints files `constraints.txt` and `dbt/constraints.txt` pin *every* package, including transitive ones, to the versions the tests ran with (`-c constraints.txt` above; dbt: `pip install -r dbt/requirements.txt -c dbt/constraints.txt`). Without `-c`, pip picks the newest versions the ranges allow.
+
 ## Testing
 
 | Suite | Command | Needs | Result (last local run, 2026-11-26) |
 |---|---|---|---|
 | Unit | `.venv/Scripts/python.exe -m pytest` | Nothing | **420 passed** |
 | Redpanda integration | `.venv/Scripts/python.exe -m pytest -m "integration and not snowflake"` | Local Redpanda | **20 passed** in 4 min 22 s |
-| Live Snowflake | `.venv/Scripts/python.exe -m pytest -m snowflake` | Snowflake credentials | 8 tests; run separately (some use the warehouse) |
+| Live Snowflake | `.venv/Scripts/python.exe -m pytest -m snowflake` | Snowflake credentials | 8 tests; run by hand only, never in CI (about 0.017–0.034 credits) |
 | dbt | `.venv-dbt/Scripts/python.exe dbt/run_dbt.py build` | Snowflake | Data tests, singular tests, dbt unit tests |
 | Lint | `.venv/Scripts/python.exe -m ruff check src tests dbt/run_dbt.py` | Nothing | Clean |
 
 The integration suite includes **11 failure-injection scenarios** on temporary topics (Snowflake faked): broker unavailable at startup, DLQ delivery failure, Snowflake connection and transaction failures, a process killed after the RAW commit and after the DLQ delivery, duplicate delivery, graceful stop with uncommitted messages, replay of committed messages, per-partition offsets after a crash, and two consumers in one group. In each scenario the test checks that no record is lost, RAW and the DLQ hold no duplicates, and the committed offsets reach the partition ends. See [`docs/reliability.md`](docs/reliability.md).
 
-These results come from local runs; there is no CI yet.
+**Test separation.** Two pytest markers keep the suites apart: `integration` (20 tests, need a Redpanda broker) and `snowflake` (8 tests, need real credentials). A plain `pytest` deselects both and runs the 420 unit tests, which need no broker, no network and no credentials. Of the 8 Snowflake tests, the 5 in `test_snowflake.py` use no warehouse; `test_snowflake_sink_live.py` and `test_dashboard_live.py` each resume the XS warehouse once (about 0.017 credits each), so the whole marker costs about 0.017–0.034 credits.
+
+The results in the table come from local runs. **CI** ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs on pushes to `main`, pull requests and manual dispatch, on Ubuntu with Python 3.11 and the pinned versions, in three jobs: lint and unit tests, `dbt parse` (dummy values, no Snowflake connection), and the 20 Redpanda integration tests against an ephemeral broker. CI uses no secrets and excludes the `snowflake` marker in every pytest command.
 
 ## Dashboard
 
@@ -148,12 +154,10 @@ Details, metric definitions and costs: [`docs/dashboard.md`](docs/dashboard.md).
 - **Manual orchestration.** The consumer, dbt and dashboard refresh are run by hand; dashboard data is as fresh as the last dbt build (plus a 10-minute cache).
 - **Single local broker** (one replica), no high availability. Several consumers in one group are supported and tested locally, but nothing is deployed or supervised.
 - **Audit coverage:** batches containing only invalid records get no row in `OPS.INGESTION_BATCHES` (they are fully visible in the DLQ and the consumer's logs).
-- **Reproducibility:** runtime dependencies are lower-bounded, not locked; command examples are written for Windows.
+- **Reproducibility:** exact versions are pinned by `constraints.txt` and `dbt/constraints.txt` (constraints files, not a hash-checked lock); command examples are written for Windows.
 
 ## Roadmap
 
-- Continuous integration (GitHub Actions) for lint and unit tests, optionally with a Redpanda service.
-- Locked dependencies for the application environment.
 - An offline demo mode for the dashboard and screenshots.
 - A measured local throughput and latency benchmark.
 - Orchestration with Airflow, raw-event archival to S3, Snowflake Streams/Tasks.

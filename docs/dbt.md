@@ -16,10 +16,10 @@ dbt lives in its **own virtualenv**, `.venv-dbt`. Installing it into the main `.
 
 ```
 <Python 3.11>/python.exe -m venv .venv-dbt
-.venv-dbt/Scripts/python.exe -m pip install -r dbt/requirements.txt   # dbt-core 1.12.6, dbt-snowflake 1.12.5
+.venv-dbt/Scripts/python.exe -m pip install -r dbt/requirements.txt -c dbt/constraints.txt   # dbt-core 1.12.6, dbt-snowflake 1.12.5
 ```
 
-The versions are pinned to stable releases at least two weeks old. No dbt packages are used (no `dbt deps`); the two generic tests normally taken from `dbt_utils` are in `dbt/tests/generic/`.
+The versions are pinned to stable releases at least two weeks old. `dbt/constraints.txt` pins every transitive package to the tested versions (kept separate from the application's `constraints.txt`, because dbt needs `python-dateutil` 2.9); its header shows how to regenerate it. CI runs `dbt parse` with dummy, non-secret profile values: parse renders the profile but never connects, and `run_dbt.py` is not used there because it requires a real key file. No dbt packages are used (no `dbt deps`); the two generic tests normally taken from `dbt_utils` are in `dbt/tests/generic/`.
 
 ## Running
 

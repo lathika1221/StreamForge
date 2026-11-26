@@ -4,9 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project status
 
-StreamForge is an event-driven e-commerce data engineering platform (Python, Redpanda, SQL, Snowflake). MVP deadline: 2026-11-26. Agreed MVP scope excludes Airflow, S3 archival, Snowflake Streams/Tasks and required CI (kept as roadmap). Work proceeds milestone by milestone (M0 packaging/config → M1 schema+simulator → M2 Redpanda → M3 producer → M4 Snowflake setup → M5 consumer → M6 dbt → M7 Streamlit → M8 reliability → M9 production readiness/portfolio); the user approves each milestone before the next starts.
+StreamForge is an event-driven e-commerce data engineering platform (Python, Redpanda, SQL, Snowflake). MVP deadline: 2026-11-26. Agreed MVP scope excludes Airflow, S3 archival and Snowflake Streams/Tasks (kept as roadmap); CI was added in M9.2. Work proceeds milestone by milestone (M0 packaging/config → M1 schema+simulator → M2 Redpanda → M3 producer → M4 Snowflake setup → M5 consumer → M6 dbt → M7 Streamlit → M8 reliability → M9 production readiness/portfolio); the user approves each milestone before the next starts.
 
-Done: M0 (packaging + `streamforge.common.config`), M1 (event contract + simulator), M2 (local Redpanda via Docker Compose), M3 (Kafka producer), M4 (Snowflake database/warehouse/role/monitor), M5 (consumer → Snowflake RAW + DLQ; live since 2026-11-25, group `streamforge-consumer` started at boundary 48/48/47). M6 (dbt in `dbt/`), M7 (Streamlit dashboard in `src/streamforge/dashboard/`), M8 (DLQ index, failure-injection tests, `docs/reliability.md`). In progress: M9 — M9.1 documentation (README, `docs/getting-started.md`, architecture refresh); planned M9.2 CI/reproducibility, M9.3 offline demo, M9.4 local benchmark. Never describe StreamForge as production-ready or exactly-once, and never quote throughput that has not been measured.
+Done: M0 (packaging + `streamforge.common.config`), M1 (event contract + simulator), M2 (local Redpanda via Docker Compose), M3 (Kafka producer), M4 (Snowflake database/warehouse/role/monitor), M5 (consumer → Snowflake RAW + DLQ; live since 2026-11-25, group `streamforge-consumer` started at boundary 48/48/47), M6 (dbt in `dbt/`), M7 (Streamlit dashboard in `src/streamforge/dashboard/`), M8 (DLQ index, failure-injection tests, `docs/reliability.md`). M9 (production readiness and portfolio) is in progress: M9.1 documentation (README, `docs/getting-started.md`, architecture refresh) is committed and pushed; M9.2 CI and constraints files is implemented and validated locally, awaiting its commit, push and first GitHub Actions run; M9.3 offline demo and M9.4 local benchmark are planned. Never describe StreamForge as production-ready or exactly-once, and never quote throughput that has not been measured.
 
 ## Dashboard
 
@@ -22,7 +22,7 @@ Done: M0 (packaging + `streamforge.common.config`), M1 (event contract + simulat
 
 ## Snowflake
 
-`docs/snowflake.md` describes everything. Resources: `ECOMMERCE_STREAMING_DB` (schemas `RAW`, `STAGING`, `ANALYTICS`, `OPS`), `STREAMFORGE_WH` (XS, 60 s auto-suspend), `STREAMFORGE_MONITOR` (5 credits/month), `STREAMFORGE_ROLE`. They are created only by the idempotent `infra/snowflake/setup.sql` via `python -m streamforge.admin.snowflake_setup plan|apply|verify` — never `OR REPLACE`, never DROP; a unit test enforces this and checks the SQL grants equal `EXPECTED_ROLE_GRANTS`. When adding a privilege, update both `setup.sql` and `EXPECTED_ROLE_GRANTS`. Never touch `LATZ_DATA_ENGINEERING` or other pre-existing objects in that account. The app always runs as `STREAMFORGE_ROLE` (`.env SNOWFLAKE_ROLE`); `connect()` runs `USE SECONDARY ROLES NONE` because the user's default secondary roles are `ALL` (which would add ACCOUNTADMIN). Auth is key-pair; the encrypted key lives in `~/.snowflake/keys/` outside the repo. Avoid needless warehouse use: each `verify` costs ~0.017 credits; `pytest -m snowflake` uses no warehouse.
+`docs/snowflake.md` describes everything. Resources: `ECOMMERCE_STREAMING_DB` (schemas `RAW`, `STAGING`, `ANALYTICS`, `OPS`), `STREAMFORGE_WH` (XS, 60 s auto-suspend), `STREAMFORGE_MONITOR` (5 credits/month), `STREAMFORGE_ROLE`. They are created only by the idempotent `infra/snowflake/setup.sql` via `python -m streamforge.admin.snowflake_setup plan|apply|verify` — never `OR REPLACE`, never DROP; a unit test enforces this and checks the SQL grants equal `EXPECTED_ROLE_GRANTS`. When adding a privilege, update both `setup.sql` and `EXPECTED_ROLE_GRANTS`. Never touch `LATZ_DATA_ENGINEERING` or other pre-existing objects in that account. The app always runs as `STREAMFORGE_ROLE` (`.env SNOWFLAKE_ROLE`); `connect()` runs `USE SECONDARY ROLES NONE` because the user's default secondary roles are `ALL` (which would add ACCOUNTADMIN). Auth is key-pair; the encrypted key lives in `~/.snowflake/keys/` outside the repo. Avoid needless warehouse use: each `verify` costs ~0.017 credits. `pytest -m snowflake` (8 tests, never in CI): `test_snowflake.py` (M4, 5 tests) uses no warehouse; `test_snowflake_sink_live.py` (M5) and `test_dashboard_live.py` (M7) each resume the warehouse, ~0.017 credits each, so the whole marker costs ~0.017–0.034 credits.
 
 ## Local Redpanda
 
@@ -47,11 +47,11 @@ Run from the repo root (`.env` is loaded from the current directory). Venv: `.ve
 Dependencies are declared in `pyproject.toml`. The package is installed editable in `.venv` with runtime deps (pydantic, python-dotenv, confluent-kafka, snowflake-connector-python[pandas], streamlit) and the `dev` extra (pytest, ruff). dbt is **not** declared in `pyproject.toml` or installed in `.venv`: it lives in `.venv-dbt`, pinned in `dbt/requirements.txt` to stable releases only — never a dbt-core pre-release (plain `dbt-snowflake` resolution pulled `dbt-core` 1.13.0b1, so dbt-core must be pinned explicitly).
 
 ```
-.venv/Scripts/python.exe -m pip install -e ".[dev]"      # runtime deps + pytest/ruff
+.venv/Scripts/python.exe -m pip install -e ".[dev]" -c constraints.txt   # runtime deps + pytest/ruff, tested versions
 .venv/Scripts/python.exe -m pytest                         # unit tests (addopts deselects `integration`)
 .venv/Scripts/python.exe -m pytest tests/unit/test_config.py::test_kafka_defaults_for_local_dev
 .venv/Scripts/python.exe -m pytest -m integration          # needs the Redpanda stack running; fails if unreachable
-.venv/Scripts/python.exe -m pytest -m snowflake            # live Snowflake checks as STREAMFORGE_ROLE (reads .env, no warehouse)
+.venv/Scripts/python.exe -m pytest -m snowflake            # live Snowflake checks (reads .env); ~0.017-0.034 credits: sink_live and dashboard_live resume the warehouse
 .venv/Scripts/python.exe -m streamforge.admin.snowflake_setup verify   # full Snowflake verification (~0.017 credits)
 docker compose -f infra/docker-compose.yml up -d --wait    # start Redpanda + create topics
 docker compose -f infra/docker-compose.yml down [-v]       # stop (-v also deletes broker data)
@@ -64,6 +64,17 @@ docker compose -f infra/docker-compose.yml down [-v]       # stop (-v also delet
 .venv/Scripts/python.exe -m ruff format src tests
 .venv/Scripts/python.exe -m streamforge.producer.simulator --orders 10 --seed 42 --start-time 2026-11-23T10:00:00Z [--invalid-rate 0.1]   # JSONL to stdout, no Kafka
 ```
+
+## CI and dependency pins
+
+`.github/workflows/ci.yml` runs on push to `main`, pull requests and `workflow_dispatch`, on `ubuntu-latest` with Python 3.11, `permissions: contents: read`, per-job timeouts, concurrency cancellation and actions pinned to full commit SHAs (`actions/checkout` v7.0.1, `actions/setup-python` v7.1.0). Three independent jobs:
+
+- `lint-test`: guard step (fails if a workflow references `secrets.`, a Snowflake password/token, or any passphrase other than `ci-dummy`), then
+  `python -m pip install -e ".[dev]" -c constraints.txt` → `python -m pip check` → `python -m ruff check src tests dbt/run_dbt.py` → `python -m ruff format --check src tests dbt/run_dbt.py` → `python -m pytest -m "not integration and not snowflake"` (420 tests).
+- `dbt-parse`: its own job (never install dbt next to the app): `python -m pip install -r dbt/requirements.txt -c dbt/constraints.txt` → `python -m pip check` → `dbt parse --project-dir dbt --profiles-dir dbt`, with dummy non-secret `SNOWFLAKE_*` values and a non-existent key path. Parse renders the profile but never connects; `dbt/run_dbt.py` is not used because it requires a real key file.
+- `integration`: install as `lint-test` → `docker compose -f infra/docker-compose.yml up -d --wait` → `python -m pytest -m "integration and not snowflake" --durations=0` (20 tests) → broker logs on failure → `docker compose -f infra/docker-compose.yml down -v` (`if: always()`).
+
+CI must never use secrets, real Snowflake values or the `snowflake` marker; every pytest command excludes `snowflake` explicitly. `constraints.txt` (from `.venv`) and `dbt/constraints.txt` (from `.venv-dbt`) pin the tested versions and stay separate (python-dateutil 4.0 vs 2.9). Regenerate only after a deliberate upgrade with `pip freeze --exclude-editable` (each file's header shows the command), restore the header and normalise to LF. No dependency-management tool is used. `dbt-core-experimental-parser` is an sdist whose build downloads a sha256-checked wheel from dbt-labs' GitHub releases, so installing dbt needs access to github.com.
 
 ## Configuration
 
