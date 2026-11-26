@@ -21,13 +21,13 @@ Each batch is processed in this order:
 4. **Load** valid records into Snowflake RAW in one transaction.
 5. **Commit** offsets (last processed offset + 1 per partition), synchronously.
 
-Steps 3–5 each get up to `--max-attempts` attempts, with exponential backoff (1 s, 2 s, …). If a step still fails, **nothing is committed**: the consumer stops with exit code 1, and the next run re-reads the batch from the last committed offsets.
+Steps 3–5 (and the DLQ index refresh before step 3) each get up to `--max-attempts` attempts, with exponential backoff (1 s, 2 s, …). If a step still fails, **nothing is committed**: the consumer stops with exit code 1, and the next run re-reads the batch from the last committed offsets.
 
 | Property | Guarantee |
 |---|---|
 | Offset commits | Manual only. Auto-commit and auto offset-store are disabled. Offsets are committed after DLQ delivery and the RAW transaction both succeed. Before committing, every consumed record must be accounted for: valid records must equal rows inserted plus duplicates skipped, and every invalid record must be confirmed in the DLQ. Otherwise the batch fails uncommitted. |
 | RAW duplicates | **None per Kafka message.** Rows are inserted by `MERGE` keyed on `(KAFKA_TOPIC, KAFKA_PARTITION, KAFKA_OFFSET)`, so a redelivered batch inserts nothing twice. Business duplicates (the same `event_id` published at different offsets) are kept in RAW and removed in the transformation layer (M6). |
-| DLQ | **Duplicate-safe on redelivery.** Step retries never repeat a DLQ step that already succeeded. A record already dead-lettered by this group is skipped (`dlq_already_present` in the summary), whether it was sent earlier in the same process or by a run that stopped before committing. In the second case the startup scan finds it: the consumer reads the last `2 × --batch-size` DLQ messages and collects their `streamforge.source_*` coordinates. **A record is skipped only if both its coordinates and its content fingerprint (`streamforge.source_sha256`) match.** A different record at a reused offset (for example, after the source topic was recreated) is always dead-lettered. DLQ entries without a fingerprint never cause a skip. On replay, records whose DLQ entries are older than the scanned tail are dead-lettered again: a duplicate is possible, but a loss is not. Limit: this assumes one consumer instance writes the DLQ, so a failed batch's DLQ records are within that tail. With several instances, deduplicate downstream on the source coordinates plus the fingerprint. |
+| DLQ | **Duplicate-safe on redelivery and replay, within one consumer at a time.** A record is skipped (`dlq_already_present`) if the DLQ already holds an entry from this group with the same source coordinates **and** content fingerprint (`streamforge.source_sha256`). The consumer keeps a `DlqIndex` built from the DLQ topic itself: a full scan of the retained DLQ at startup, then an incremental refresh before every DLQ publish, including every retry attempt. Records delivered by a failed attempt (partial delivery, or a timeout after the broker stored the message) are therefore not sent twice, and replays of old offsets are recognised regardless of age. A different record at a reused offset is always dead-lettered; entries without a complete identity never cause a skip. Limits (duplicates possible, loss never): two consumers publishing the same record at the same moment, and source records that outlive their DLQ entry under retention. See `docs/reliability.md`. |
 | Ordering | Per partition, and therefore per `order_id`. |
 | Start position | `--offset-reset error` (the default) refuses to guess when the group has no committed offset. Set an explicit boundary first (below). |
 | Shutdown | Ctrl+C or SIGTERM finishes the current batch, commits it, then leaves the group. Nothing unprocessed is committed. |
@@ -87,7 +87,7 @@ To inspect: `docker exec streamforge-redpanda rpk topic consume ecommerce.events
 
 Exit codes: `0` normal, `1` processing or infrastructure error (nothing uncommitted was committed), `2` usage or configuration error (including an admin role), `130` interrupted.
 
-Startup checks, before anything is consumed: both topics exist, the DLQ tail is scanned for records this group already dead-lettered, Snowflake is reachable, the role is not an admin role, and the RAW tables exist (they are created if missing).
+Startup checks, before anything is consumed: both topics exist, the whole retained DLQ is read into the DLQ index (records this group already dead-lettered), Snowflake is reachable, the role is not an admin role, and the RAW tables exist (they are created if missing).
 
 **Logging:**
 
@@ -119,12 +119,14 @@ Startup checks, before anything is consumed: both topics exist, the DLQ tail is 
 
 | Command | What runs |
 |---|---|
-| `pytest` | Unit tests: classification, DLQ headers and delivery confirmation, batch ordering, retries and no-commit-on-failure, next-offset commits with gaps and out-of-order offsets, DLQ de-duplication (within retries, same-process batch retry, restart with tail scan), byte-identical keys and values for malformed records, no payload values or credentials in logs, redelivery, idle and stop, Snowflake SQL and transactions, admin-role refusal, CLI. No broker and no Snowflake. |
-| `pytest -m integration` | `tests/integration/test_consumer_redpanda.py`: each test uses its own temporary topics (deleted afterwards) and a unique group. It checks real DLQ publishing with key and value byte-identical to the source message, committed offsets against partition ends, and a rerun that reprocesses nothing. A restart scenario (DLQ succeeded, Snowflake failed, nothing committed, restart) checks that the DLQ is not duplicated. It never touches `ecommerce.events` or `streamforge-consumer`. |
+| `pytest` | Unit tests: classification, DLQ headers and delivery confirmation, batch ordering, retries and no-commit-on-failure, next-offset commits with gaps and out-of-order offsets, DLQ de-duplication (within retries, same-process batch retry, restart with the DLQ index); `tests/unit/test_dlq_index.py` covers the index (full scan, incremental refresh, several partitions, retention, offset gaps, malformed headers, timeouts, replay, partial delivery, partition handoff and the concurrent-publish limitation), byte-identical keys and values for malformed records, no payload values or credentials in logs, redelivery, idle and stop, Snowflake SQL and transactions, admin-role refusal, CLI. No broker and no Snowflake. |
+| `pytest -m integration` | `tests/integration/test_consumer_redpanda.py`: each test uses its own temporary topics (deleted afterwards) and a unique group. It checks real DLQ publishing with key and value byte-identical to the source message, committed offsets against partition ends, and a rerun that reprocesses nothing. A restart scenario (DLQ succeeded, Snowflake failed, nothing committed, restart) checks that the DLQ is not duplicated. `tests/integration/test_consumer_recovery.py` runs the M8 failure-injection scenarios (see `docs/reliability.md`). Neither touches `ecommerce.events` or `streamforge-consumer`. |
 | `pytest -m snowflake` | `tests/integration/test_snowflake_sink_live.py`: real `MERGE` into uniquely prefixed `IT_…` tables (dropped afterwards), a duplicate-safe reload, and traceability columns and audit rows. Costs about 0.017 credits (the 60 s minimum). |
 
 ## Limitations
 
 - **Throughput:** one consumer process and one Snowflake transaction per batch. Throughput has not been benchmarked yet.
 - **Warehouse cost:** each batch with valid events resumes `STREAMFORGE_WH`. With continuous traffic the warehouse stays up, capped by the 5-credit monthly `STREAMFORGE_MONITOR`.
-- **DLQ consumption:** the DLQ is only written; nothing consumes it automatically.
+- **DLQ consumption:** the DLQ is only written; nothing consumes it automatically. Replay procedure: `docs/reliability.md`.
+- **Audit coverage:** `OPS.INGESTION_BATCHES` gets a row only for batches that contain at least one valid record; batches made only of invalid records are visible in the logs (`consumer_summary`) and the DLQ, not in OPS.
+- **Observability:** each run ends with a `consumer_summary` JSON log line (consumed, valid, inserted, duplicates, new and already-present DLQ records, commits, retries per step, rebalances, committed offsets).

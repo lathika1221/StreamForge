@@ -29,7 +29,7 @@ from __future__ import annotations
 
 import hashlib
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from datetime import UTC, datetime
 from typing import Any
 
@@ -79,6 +79,86 @@ def dlq_headers(
     return [(HEADER_PREFIX + k, v.encode("utf-8")) for k, v in values.items()]
 
 
+def identity_from_headers(
+    headers: list[tuple[str, bytes | None]] | None, source_topic: str, consumer_group: str
+) -> DlqIdentity | None:
+    """The source identity recorded in a DLQ message, or None if the message belongs to
+    another group/topic or lacks any part of the identity (never used to skip a record)."""
+    h = {k: (v or b"").decode("utf-8", "replace") for k, v in (headers or [])}
+    if (
+        h.get(HEADER_PREFIX + "consumer_group") != consumer_group
+        or h.get(HEADER_PREFIX + "source_topic") != source_topic
+    ):
+        return None
+    try:
+        return (
+            source_topic,
+            int(h[HEADER_PREFIX + "source_partition"]),
+            int(h[HEADER_PREFIX + "source_offset"]),
+            h[HEADER_PREFIX + "source_sha256"],
+        )
+    except (KeyError, ValueError):
+        return None
+
+
+def _read_identities(
+    reader: Any,
+    dlq_topic: str,
+    starts: dict[int, int],
+    ends: dict[int, int],
+    *,
+    source_topic: str,
+    consumer_group: str,
+    timeout: float,
+    clock: Callable[[], float],
+) -> set[DlqIdentity]:
+    """Read DLQ partitions from ``starts`` (inclusive) to ``ends`` (exclusive)."""
+    found: set[DlqIdentity] = set()
+    todo = {p for p in ends if ends[p] > starts[p]}
+    if not todo:
+        return found
+    reader.assign([TopicPartition(dlq_topic, p, starts[p]) for p in sorted(todo)])
+    positions = {p: starts[p] for p in todo}
+    deadline = clock() + timeout
+    while any(positions[p] < ends[p] for p in todo) and clock() < deadline:
+        msg = reader.poll(0.5)
+        if msg is None or msg.error() is not None:
+            _advance_from_position(reader, dlq_topic, positions)
+            continue
+        positions[msg.partition()] = msg.offset() + 1
+        identity = identity_from_headers(msg.headers(), source_topic, consumer_group)
+        if identity is not None:
+            found.add(identity)
+    if any(positions[p] < ends[p] for p in todo):
+        raise DlqError(f"could not read the DLQ {dlq_topic} within {timeout}s")
+    return found
+
+
+def _advance_from_position(reader: Any, dlq_topic: str, positions: dict[int, int]) -> None:
+    """Advance over offsets that are never delivered as messages (transaction control
+    records, compacted gaps): the reader's position is past them although no message
+    was returned. Without this such a gap would stall the read until the timeout."""
+    position = getattr(reader, "position", None)
+    if position is None:
+        return
+    for tp in position([TopicPartition(dlq_topic, p) for p in positions]):
+        if tp.offset >= 0 and tp.partition in positions:
+            positions[tp.partition] = max(positions[tp.partition], tp.offset)
+
+
+def _watermarks(reader: Any, dlq_topic: str, timeout: float) -> dict[int, tuple[int, int]]:
+    metadata = reader.list_topics(dlq_topic, timeout=timeout)
+    found = metadata.topics.get(dlq_topic)
+    if found is None or getattr(found, "error", None) is not None or not found.partitions:
+        # Never report "nothing dead-lettered" for a DLQ that cannot be read.
+        raise DlqError(f"DLQ topic {dlq_topic} is missing or unavailable")
+    partitions = list(found.partitions)
+    return {
+        p: reader.get_watermark_offsets(TopicPartition(dlq_topic, p), timeout=timeout)
+        for p in partitions
+    }
+
+
 def recent_dead_letters(
     reader: Any,
     dlq_topic: str,
@@ -89,54 +169,97 @@ def recent_dead_letters(
     timeout: float = 15.0,
     clock: Callable[[], float] = time.monotonic,
 ) -> set[DlqIdentity]:
-    """Identities (coordinates + fingerprint) already dead-lettered by ``consumer_group``,
-    read from the last ``window`` messages of each DLQ partition.
+    """Identities in the last ``window`` messages of each DLQ partition.
 
-    Used at startup so a batch that failed after its DLQ step (and is therefore
-    redelivered) is not dead-lettered twice. ``reader`` is a Kafka consumer used only
-    with ``assign`` (it joins no group and commits nothing). Since one consumer
-    instance writes the DLQ sequentially and a batch holds at most ``batch_size``
-    records, a window of at least ``batch_size`` covers the uncommitted batch.
-    Entries without a fingerprint header are ignored (never used to skip a record).
+    Superseded by :class:`DlqIndex` (which reads the whole retained DLQ and refreshes
+    incrementally); kept for callers that only need a bounded tail.
     """
-    metadata = reader.list_topics(dlq_topic, timeout=timeout)
-    partitions = list(metadata.topics[dlq_topic].partitions)
-    assignments, ends = [], {}
-    for p in partitions:
-        low, high = reader.get_watermark_offsets(TopicPartition(dlq_topic, p), timeout=timeout)
-        if high > low:
-            ends[p] = high
-            assignments.append(TopicPartition(dlq_topic, p, max(low, high - window)))
-    found: set[DlqIdentity] = set()
-    if not assignments:
-        return found
-    reader.assign(assignments)
-    positions = {tp.partition: tp.offset for tp in assignments}
-    deadline = clock() + timeout
-    while any(positions[p] < ends[p] for p in ends) and clock() < deadline:
-        msg = reader.poll(0.5)
-        if msg is None or msg.error() is not None:
-            continue
-        positions[msg.partition()] = msg.offset() + 1
-        h = {k: (v or b"").decode("utf-8", "replace") for k, v in (msg.headers() or [])}
-        if (
-            h.get(HEADER_PREFIX + "consumer_group") == consumer_group
-            and h.get(HEADER_PREFIX + "source_topic") == source_topic
-        ):
-            try:
-                found.add(
-                    (
-                        source_topic,
-                        int(h[HEADER_PREFIX + "source_partition"]),
-                        int(h[HEADER_PREFIX + "source_offset"]),
-                        h[HEADER_PREFIX + "source_sha256"],
-                    )
-                )
-            except (KeyError, ValueError):
-                continue  # incomplete identity: never used to skip a record
-    if any(positions[p] < ends[p] for p in ends):
-        raise DlqError(f"could not read the DLQ tail of {dlq_topic} within {timeout}s")
-    return found
+    marks = _watermarks(reader, dlq_topic, timeout)
+    starts = {p: max(low, high - window) for p, (low, high) in marks.items()}
+    ends = {p: high for p, (_, high) in marks.items()}
+    return _read_identities(
+        reader,
+        dlq_topic,
+        starts,
+        ends,
+        source_topic=source_topic,
+        consumer_group=consumer_group,
+        timeout=timeout,
+        clock=clock,
+    )
+
+
+class DlqIndex:
+    """Persistent DLQ de-duplication index, backed by the DLQ topic itself.
+
+    The first :meth:`refresh` reads every retained DLQ message (from each partition's
+    low watermark); later refreshes read only messages appended since the previous one.
+    The consumer refreshes before every DLQ publish, so records dead-lettered earlier -
+    by this process, by a crashed predecessor, or by another consumer instance that
+    owned the partition before a rebalance - are recognised regardless of age.
+
+    Completeness: a DLQ message is produced after its source record, so with equal
+    retention on both topics (today both use the broker default) a source record that
+    can still be (re)delivered normally still has its DLQ entry; segment-based deletion
+    can expire a DLQ entry slightly earlier (a duplicate on replay, never a loss).
+    No extra storage or schema is needed. ``reader`` is a Kafka consumer used only
+    with ``assign``: it joins no group and commits nothing.
+    """
+
+    def __init__(
+        self,
+        reader: Any,
+        dlq_topic: str,
+        *,
+        source_topic: str,
+        consumer_group: str,
+        timeout: float = 30.0,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self._reader = reader
+        self._topic = dlq_topic
+        self._source_topic = source_topic
+        self._group = consumer_group
+        self._timeout = timeout
+        self._clock = clock
+        self._positions: dict[int, int] = {}
+        self._identities: set[DlqIdentity] = set()
+        self.messages_read = 0
+
+    def refresh(self) -> int:
+        """Read DLQ messages appended since the last refresh; return new identities."""
+        marks = _watermarks(self._reader, self._topic, self._timeout)
+        # Never move backwards; if retention removed old messages, start at the new low.
+        starts = {p: max(low, self._positions.get(p, low)) for p, (low, _) in marks.items()}
+        ends = {p: high for p, (_, high) in marks.items()}
+        found = _read_identities(
+            self._reader,
+            self._topic,
+            starts,
+            ends,
+            source_topic=self._source_topic,
+            consumer_group=self._group,
+            timeout=self._timeout,
+            clock=self._clock,
+        )
+        self.messages_read += sum(max(0, ends[p] - starts[p]) for p in ends)
+        self._positions.update({p: max(starts[p], ends[p]) for p in ends})
+        before = len(self._identities)
+        self._identities |= found
+        return len(self._identities) - before
+
+    def __contains__(self, identity: object) -> bool:
+        return identity in self._identities
+
+    def __len__(self) -> int:
+        return len(self._identities)
+
+    def update(self, identities: Iterable[DlqIdentity]) -> None:
+        """Record identities this process has just dead-lettered (confirmed delivery)."""
+        self._identities.update(identities)
+
+    def close(self) -> None:
+        self._reader.close()
 
 
 class DlqWriter:

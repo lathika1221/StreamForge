@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import signal
 import sys
@@ -21,7 +22,7 @@ from streamforge.consumer.consumer import (
     ProcessingError,
     build_consumer_config,
 )
-from streamforge.consumer.dlq import DlqError, DlqWriter, recent_dead_letters
+from streamforge.consumer.dlq import DlqError, DlqIndex, DlqWriter
 from streamforge.consumer.snowflake_sink import FORBIDDEN_ROLES, RawEventSink, SinkError
 from streamforge.producer.publisher import build_producer_config
 
@@ -57,6 +58,7 @@ def _parser() -> argparse.ArgumentParser:
 def _summary(ec: EventConsumer) -> str:
     s = ec.stats
     committed = ", ".join(f"{k}={v}" for k, v in sorted(s.committed.items())) or "none"
+    retries = ", ".join(f"{k}={v}" for k, v in sorted(s.retries.items())) or "none"
     return "\n".join(
         [
             "StreamForge consumer summary",
@@ -65,6 +67,9 @@ def _summary(ec: EventConsumer) -> str:
             f"already in dlq {s.dlq_already_present})",
             f"  RAW rows inserted:   {s.rows_inserted}",
             f"  duplicates skipped:  {s.duplicates_skipped}",
+            f"  offset commits:      {s.commits}",
+            f"  retries:             {retries}",
+            f"  rebalances:          {s.rebalances}",
             f"  committed offsets:   {committed}",
         ]
     )
@@ -111,6 +116,22 @@ def main(
         if sink_factory
         else RawEventSink(lambda: connect(snowflake), database=snowflake.database)
     )
+    # Reads the DLQ topic (assign only: no group membership, no commits).
+    dlq_index = DlqIndex(
+        dlq_reader_factory(
+            {
+                "bootstrap.servers": kafka.bootstrap_servers,
+                "group.id": f"streamforge-dlq-index-{uuid.uuid4().hex[:8]}",  # never committed
+                "client.id": "streamforge-dlq-index",
+                "enable.auto.commit": False,
+                # if retention removes the start offset mid-read, continue from the new low
+                "auto.offset.reset": "earliest",
+            }
+        ),
+        kafka.dlq_topic,
+        source_topic=kafka.events_topic,
+        consumer_group=kafka.consumer_group,
+    )
     ec = EventConsumer(
         consumer,
         sink,
@@ -120,6 +141,7 @@ def main(
         batch_size=args.batch_size,
         batch_timeout=args.batch_timeout,
         max_attempts=args.max_attempts,
+        dlq_index=dlq_index,
     )
 
     interrupted = False
@@ -146,26 +168,12 @@ def main(
                 file=sys.stderr,
             )
             return 1
-        reader = dlq_reader_factory(
-            {
-                "bootstrap.servers": kafka.bootstrap_servers,
-                "group.id": f"streamforge-dlq-scan-{uuid.uuid4().hex[:8]}",  # never committed
-                "client.id": "streamforge-dlq-scan",
-                "enable.auto.commit": False,
-            }
+        dlq_index.refresh()  # full scan of the retained DLQ before consuming anything
+        log.info(
+            "DLQ index: %d record(s) already dead-lettered by this group (%d DLQ messages read)",
+            len(dlq_index),
+            dlq_index.messages_read,
         )
-        try:
-            already = recent_dead_letters(
-                reader,
-                kafka.dlq_topic,
-                source_topic=kafka.events_topic,
-                consumer_group=kafka.consumer_group,
-                window=2 * args.batch_size,
-            )
-        finally:
-            reader.close()
-        ec.add_dead_lettered(already)
-        log.info("DLQ tail scan: %d record(s) already dead-lettered by this group", len(already))
         if hasattr(sink, "ensure_ready"):
             sink.ensure_ready()  # fail fast: connection, role guard, tables
         log.info(
@@ -190,8 +198,10 @@ def main(
             signal.signal(s, handler)
         consumer.close()  # leaves the group; commits nothing (auto-commit is off)
         dlq.close()
+        dlq_index.close()
         if hasattr(sink, "close"):
             sink.close()
+    log.info("consumer_summary %s", json.dumps(ec.stats.as_dict(), sort_keys=True))
     print(_summary(ec))
     if interrupted and code == 0:
         return 130

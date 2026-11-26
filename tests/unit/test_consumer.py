@@ -652,7 +652,7 @@ def test_recent_dead_letters_on_empty_dlq_and_timeout():
     )
     assert empty == set()
     ticks = iter(range(100))
-    with pytest.raises(DlqError, match="could not read the DLQ tail"):
+    with pytest.raises(DlqError, match="could not read the DLQ"):
         recent_dead_letters(
             FakeDlqReader([_dlq_headers_for(TOPIC, 0, 1)], stall=True),
             "dlq",
@@ -676,7 +676,7 @@ def test_cli_dlq_scan_suppresses_resend(cli_env, sim_records):
     )
     assert code == 0 and producer.produced == [] and reader.closed
     assert configs["reader"]["enable.auto.commit"] is False
-    assert configs["reader"]["group.id"].startswith("streamforge-dlq-scan-")
+    assert configs["reader"]["group.id"].startswith("streamforge-dlq-index-")
 
 
 # ---------------------------- commit ordering and next offsets (items 5, 6)
