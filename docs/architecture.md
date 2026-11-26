@@ -139,17 +139,17 @@ Delivery is **at-least-once**, made safe by idempotent sinks (RAW `MERGE` on Kaf
 
 ## 7. Performance
 
-**No throughput or latency has been measured yet.** The figures below are the original design targets, not results:
+The original design targets, with what has been measured. Throughput was measured locally for the Kafka path only (single local Redpanda broker, Snowflake replaced by an in-memory sink); see [`docs/benchmark.md`](benchmark.md):
 
 | Metric | Design target | Measured |
 |---|---:|---|
-| Event throughput | 100 events/sec | Not measured |
+| Event throughput | 100 events/sec | Producer: 3,732 (2,000 events) to 16,644 events/s (10,000 events), medians of 3 runs. Consumer without Snowflake: 41–43 events/s at batch 100 and 202–214 at batch 500 with 5 % invalid records (each such batch spends about 2.5 s on DLQ index refreshes); 32,473 events/s with no invalid records. **Below target at batch 100 when invalid records are common.** Snowflake loading not measured |
 | Dashboard freshness | Under 10 seconds | Not met by design: the dashboard is as fresh as the last manual dbt build plus a 10-minute query cache |
 | Duplicate business records | 0 | RAW: duplicate-free per Kafka message (`MERGE`); STAGING: deduplicated by `event_id`. Verified by tests, not by a load test |
 | Event accounting | All accepted events reconciled | Checked per batch before every commit; `OPS.OPS_INGESTION_RECONCILIATION` and dbt tests compare RAW with the audit |
 | Recovery | Successful replay after restart | Verified by the Redpanda failure-injection tests (`tests/integration/test_consumer_recovery.py`) |
 
-A local benchmark is planned (M9); until then no throughput figure should be quoted.
+Quote only these measured figures, with their conditions; nothing has been measured against Snowflake or a multi-broker cluster.
 
 ## 8. Implementation Status
 

@@ -4,7 +4,7 @@
 
 An event-driven e-commerce data engineering pipeline: simulated order events stream through **Redpanda (Kafka API)**, are validated and loaded into **Snowflake** by a Python consumer, transformed with **dbt**, and presented in a **Streamlit** dashboard.
 
-> **Status:** MVP complete (milestones M0–M8) and tested locally. It runs on a developer machine with a single-node broker and an XS warehouse; it is a portfolio project, not a deployed production service. Throughput has not been benchmarked yet. See [Limitations](#limitations).
+> **Status:** MVP complete (milestones M0–M8) and tested locally. It runs on a developer machine with a single-node broker and an XS warehouse; it is a portfolio project, not a deployed production service. Throughput is measured only locally and only for the Kafka path ([`docs/benchmark.md`](docs/benchmark.md)). See [Limitations](#limitations).
 
 ## The problem
 
@@ -127,17 +127,17 @@ Without a Snowflake account you can still run the simulator, the producer, Redpa
 
 | Suite | Command | Needs | Result (last local run, 2026-11-26) |
 |---|---|---|---|
-| Unit | `.venv/Scripts/python.exe -m pytest` | Nothing | **445 passed** |
-| Redpanda integration | `.venv/Scripts/python.exe -m pytest -m "integration and not snowflake"` | Local Redpanda | 21 tests: the 20 M5–M8 tests **passed** locally in 4 min 22 s and in CI; the M9.3 demo test runs in CI |
+| Unit | `.venv/Scripts/python.exe -m pytest` | Nothing | **455 passed** |
+| Redpanda integration | `.venv/Scripts/python.exe -m pytest -m "integration and not snowflake"` | Local Redpanda | 22 tests: the 20 M5–M8 tests **passed** locally in 4 min 22 s; all 21 up to M9.3 **passed** in CI; the M9.3 demo and M9.4 benchmark tests also passed locally |
 | Live Snowflake | `.venv/Scripts/python.exe -m pytest -m snowflake` | Snowflake credentials | 8 tests; run by hand only, never in CI (about 0.017–0.034 credits) |
 | dbt | `.venv-dbt/Scripts/python.exe dbt/run_dbt.py build` | Snowflake | Data tests, singular tests, dbt unit tests |
 | Lint | `.venv/Scripts/python.exe -m ruff check src tests dbt/run_dbt.py` | Nothing | Clean |
 
 The integration suite includes **11 failure-injection scenarios** on temporary topics (Snowflake faked): broker unavailable at startup, DLQ delivery failure, Snowflake connection and transaction failures, a process killed after the RAW commit and after the DLQ delivery, duplicate delivery, graceful stop with uncommitted messages, replay of committed messages, per-partition offsets after a crash, and two consumers in one group. In each scenario the test checks that no record is lost, RAW and the DLQ hold no duplicates, and the committed offsets reach the partition ends. See [`docs/reliability.md`](docs/reliability.md).
 
-**Test separation.** Two pytest markers keep the suites apart: `integration` (21 tests, need a Redpanda broker) and `snowflake` (8 tests, need real credentials). A plain `pytest` deselects both and runs the 445 unit tests, which need no broker, no network and no credentials. Of the 8 Snowflake tests, the 5 in `test_snowflake.py` use no warehouse; `test_snowflake_sink_live.py` and `test_dashboard_live.py` each resume the XS warehouse once (about 0.017 credits each), so the whole marker costs about 0.017–0.034 credits.
+**Test separation.** Two pytest markers keep the suites apart: `integration` (22 tests, need a Redpanda broker) and `snowflake` (8 tests, need real credentials). A plain `pytest` deselects both and runs the 455 unit tests, which need no broker, no network and no credentials. Of the 8 Snowflake tests, the 5 in `test_snowflake.py` use no warehouse; `test_snowflake_sink_live.py` and `test_dashboard_live.py` each resume the XS warehouse once (about 0.017 credits each), so the whole marker costs about 0.017–0.034 credits.
 
-The results in the table come from local runs. **CI** ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs on pushes to `main`, pull requests and manual dispatch, on Ubuntu with Python 3.11 and the pinned versions, in three jobs: lint and unit tests, `dbt parse` (dummy values, no Snowflake connection), and the 21 Redpanda integration tests against an ephemeral broker. CI uses no secrets and excludes the `snowflake` marker in every pytest command.
+The results in the table come from local runs. **CI** ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs on pushes to `main`, pull requests and manual dispatch, on Ubuntu with Python 3.11 and the pinned versions, in three jobs: lint and unit tests, `dbt parse` (dummy values, no Snowflake connection), and the 22 Redpanda integration tests against an ephemeral broker. CI uses no secrets and excludes the `snowflake` marker in every pytest command.
 
 ## Dashboard
 
@@ -165,7 +165,7 @@ Details, metric definitions and costs: [`docs/dashboard.md`](docs/dashboard.md).
 
 - **Not exactly-once end to end; the DLQ can contain duplicates.** Two consumers in one group can both dead-letter the same record if one is evicted from the group while still running (frozen, cut off from the coordinator, or stuck in retries against a degraded broker for longer than the 300 s poll interval). The result is a duplicate DLQ entry; the record itself is still dead-lettered. A unit test reproduces this. Kafka transactions would close it but are not implemented.
 - **DLQ retention.** If a DLQ entry expires (or the DLQ's retention is shortened) while its source message is still retained, replaying that message dead-letters it again: another duplicate DLQ entry.
-- **Not benchmarked.** The 100 events/s figure in the architecture doc is a design target, not a measurement.
+- **Throughput, measured locally for the Kafka path only** ([`docs/benchmark.md`](docs/benchmark.md)): the producer reached about 3,700–16,600 events/s on one local broker. The consumer, with Snowflake replaced by an in-memory sink, reached over 30,000 events/s without invalid records, but only about 40–210 events/s (batch size 100–500) with 5 % invalid records. Each batch containing an invalid record spends about 2.5 s refreshing the DLQ de-duplication index, so it falls below the 100 events/s design target at batch size 100. Snowflake loading, the likely production bottleneck, is not measured.
 - **Manual orchestration.** The consumer, dbt and dashboard refresh are run by hand; dashboard data is as fresh as the last dbt build (plus a 10-minute cache).
 - **Single local broker** (one replica), no high availability. Several consumers in one group are supported and tested locally, but nothing is deployed or supervised.
 - **Audit coverage:** batches containing only invalid records get no row in `OPS.INGESTION_BATCHES` (they are fully visible in the DLQ and the consumer's logs).
@@ -174,7 +174,7 @@ Details, metric definitions and costs: [`docs/dashboard.md`](docs/dashboard.md).
 ## Roadmap
 
 - Dashboard screenshots (captured from the demo mode, see [`docs/demo.md`](docs/demo.md#screenshots)).
-- A measured local throughput and latency benchmark.
+- Remove the DLQ index refresh cost (one refresh per batch, a persistent reader) and re-run the benchmark; add the GitHub-runner benchmark results.
 - Orchestration with Airflow, raw-event archival to S3, Snowflake Streams/Tasks.
 - Optional Kafka transactions to close the concurrent dead-letter race.
 
@@ -191,6 +191,7 @@ Details, metric definitions and costs: [`docs/dashboard.md`](docs/dashboard.md).
 | [`docs/reliability.md`](docs/reliability.md) | Failure handling, recovery scenarios, known limitations |
 | [`docs/snowflake.md`](docs/snowflake.md) | Snowflake resources, grants, authentication, costs |
 | [`docs/dbt.md`](docs/dbt.md) | Models, tests, metric definitions |
+| [`docs/benchmark.md`](docs/benchmark.md) | Kafka-path throughput: method, local results, bottleneck analysis |
 | [`docs/demo.md`](docs/demo.md) | Offline dashboard demo mode and local pipeline demo |
 | [`docs/dashboard.md`](docs/dashboard.md) | Dashboard tabs, metrics, safety |
 
