@@ -4,9 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project status
 
-StreamForge is an event-driven e-commerce data engineering platform (Python, Redpanda, SQL, Snowflake). MVP deadline: 2026-11-26. Agreed MVP scope excludes Airflow, S3 archival, Snowflake Streams/Tasks and required CI (kept as roadmap). Work proceeds milestone by milestone (M0 packaging/config → M1 schema+simulator → M2 Redpanda → M3 producer → M4 Snowflake setup → M5 consumer → M6 dbt → M7 Streamlit → M8 demo); the user approves each milestone before the next starts.
+StreamForge is an event-driven e-commerce data engineering platform (Python, Redpanda, SQL, Snowflake). MVP deadline: 2026-11-26. Agreed MVP scope excludes Airflow, S3 archival, Snowflake Streams/Tasks and required CI (kept as roadmap). Work proceeds milestone by milestone (M0 packaging/config → M1 schema+simulator → M2 Redpanda → M3 producer → M4 Snowflake setup → M5 consumer → M6 dbt → M7 Streamlit → M8 reliability → M9 production readiness/portfolio); the user approves each milestone before the next starts.
 
-Done: M0 (packaging + `streamforge.common.config`), M1 (event contract + simulator), M2 (local Redpanda via Docker Compose), M3 (Kafka producer), M4 (Snowflake database/warehouse/role/monitor), M5 (consumer → Snowflake RAW + DLQ; live since 2026-11-25, group `streamforge-consumer` started at boundary 48/48/47). M6 (dbt in `dbt/`), M7 (Streamlit dashboard in `src/streamforge/dashboard/`). M8 (demo/benchmark) remains.
+Done: M0 (packaging + `streamforge.common.config`), M1 (event contract + simulator), M2 (local Redpanda via Docker Compose), M3 (Kafka producer), M4 (Snowflake database/warehouse/role/monitor), M5 (consumer → Snowflake RAW + DLQ; live since 2026-11-25, group `streamforge-consumer` started at boundary 48/48/47). M6 (dbt in `dbt/`), M7 (Streamlit dashboard in `src/streamforge/dashboard/`), M8 (DLQ index, failure-injection tests, `docs/reliability.md`). In progress: M9 — M9.1 documentation (README, `docs/getting-started.md`, architecture refresh); planned M9.2 CI/reproducibility, M9.3 offline demo, M9.4 local benchmark. Never describe StreamForge as production-ready or exactly-once, and never quote throughput that has not been measured.
 
 ## Dashboard
 
@@ -44,7 +44,7 @@ Invalid records are generated separately in `streamforge.producer.invalid_record
 
 Run from the repo root (`.env` is loaded from the current directory). Venv: `.venv` (Python 3.11, Windows).
 
-Dependencies are declared in `pyproject.toml`. The package is installed editable in `.venv` with runtime deps (pydantic, python-dotenv, confluent-kafka, snowflake-connector-python[pandas], streamlit) and the `dev` extra (pytest, ruff). dbt is **not** declared or installed: it is resolved in M6 against a stable release only — never a dbt-core pre-release (plain `dbt-snowflake` resolution pulled `dbt-core` 1.13.0b1, so dbt-core must be pinned explicitly).
+Dependencies are declared in `pyproject.toml`. The package is installed editable in `.venv` with runtime deps (pydantic, python-dotenv, confluent-kafka, snowflake-connector-python[pandas], streamlit) and the `dev` extra (pytest, ruff). dbt is **not** declared in `pyproject.toml` or installed in `.venv`: it lives in `.venv-dbt`, pinned in `dbt/requirements.txt` to stable releases only — never a dbt-core pre-release (plain `dbt-snowflake` resolution pulled `dbt-core` 1.13.0b1, so dbt-core must be pinned explicitly).
 
 ```
 .venv/Scripts/python.exe -m pip install -e ".[dev]"      # runtime deps + pytest/ruff
@@ -73,7 +73,7 @@ docker compose -f infra/docker-compose.yml down [-v]       # stop (-v also delet
 
 ## Intended architecture
 
-`docs/architecture.md` is the design source of truth. The planned data flow:
+`docs/architecture.md` is the design source of truth (Mermaid flow and consumer commit-protocol diagrams, implementation status); `README.md` is the portfolio overview and `docs/getting-started.md` the ordered end-to-end setup. Keep all three consistent with the code. The data flow:
 
 ```
 Event simulator -> Python producer -> Redpanda (Kafka API) -> Python consumer

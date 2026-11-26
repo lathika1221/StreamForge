@@ -23,8 +23,8 @@ dev = [
     "pytest>=8.0",
     "ruff>=0.5",
 ]
-# dbt is intentionally not declared yet: it is resolved in M6 against a stable
-# (non-pre-release) dbt-core / dbt-snowflake release.
+# dbt is intentionally not declared here: it lives in the separate .venv-dbt, pinned in
+# dbt/requirements.txt (installing it into this environment downgrades python-dateutil).
 
 [tool.setuptools.packages.find]
 where = ["src"]

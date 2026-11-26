@@ -2,48 +2,39 @@
 
 ## 1. Project Overview
 
-StreamForge is a real-time e-commerce data engineering platform designed to ingest, process, validate, and analyse streaming business events.
+StreamForge is an event-driven e-commerce data engineering platform. It ingests streaming business events through Kafka (Redpanda), validates them, loads them into Snowflake in micro-batches, transforms them with dbt and presents the results in a Streamlit dashboard.
 
 **Objective:** Transform raw e-commerce events into reliable, actionable business intelligence.
 
+**Status:** the MVP pipeline (simulator → producer → Redpanda → consumer → Snowflake RAW → dbt → dashboard) is implemented and tested locally (milestones M0–M8). It runs on a developer machine with a single-node Redpanda broker and an XS Snowflake warehouse; it is not deployed as a production service. Items marked *roadmap* below are not implemented.
+
 ## 2. High-Level Architecture
 
-```text
-E-Commerce Event Simulator
-          |
-          v
-   Python Producer
-          |
-          v
-   Redpanda (Kafka API)
-          |
-          v
-   Python Consumer
-          |
-          v
-   Event Validation
-          |
-          v
-   Snowflake RAW Layer
-          |
-          v
-   SQL / dbt Transformations
-          |
-          v
-   Snowflake ANALYTICS
-          |
-          v
-   Streamlit Dashboard
+```mermaid
+flowchart LR
+    SIM["Event simulator<br/>(deterministic, seeded)"] --> PROD["Python producer<br/>acks=all, idempotent"]
+    PROD --> EV[("Redpanda<br/>ecommerce.events<br/>3 partitions")]
+    EV --> CONS["Python consumer<br/>validate, batch, retry"]
+    CONS -- "invalid records<br/>(bytes unchanged)" --> DLQ[("Redpanda<br/>ecommerce.events.dlq")]
+    CONS -- "valid records<br/>MERGE in one transaction" --> RAW[("Snowflake RAW<br/>+ OPS.INGESTION_BATCHES")]
+    RAW --> DBT["dbt<br/>STAGING views"]
+    DBT --> AN[("Snowflake ANALYTICS<br/>facts and aggregates")]
+    DBT --> OPS[("Snowflake OPS<br/>reconciliation, anomalies")]
+    AN --> DASH["Streamlit dashboard"]
+    OPS --> DASH
 ```
 
 Supporting infrastructure:
 
-- Docker Compose: Local service orchestration
-- Snowflake Streams and Tasks: Incremental processing
-- Apache Airflow: Workflow orchestration
-- AWS S3: Raw event archival
-- Pytest: Automated testing
-- GitHub Actions: Continuous integration
+| Component | Status |
+|---|---|
+| Docker Compose (local single-node Redpanda) | Implemented (`infra/docker-compose.yml`) |
+| Pytest (unit, Redpanda integration, live Snowflake checks) | Implemented |
+| dbt Core (separate virtualenv) | Implemented (`dbt/`) |
+| Snowflake Streams and Tasks | Roadmap |
+| Apache Airflow (scheduling) | Roadmap |
+| AWS S3 (raw event archival) | Roadmap |
+| GitHub Actions (continuous integration) | Roadmap |
 
 ## 3. Core Components
 
@@ -65,7 +56,7 @@ Three primary data layers:
 
 - RAW: Original ingested events
 - STAGING: Validated and transformed records
-- ANALYTICS: Business-ready facts, dimensions, and aggregates
+- ANALYTICS: Business-ready facts and aggregates
 
 Implemented in M4 as database `ECOMMERCE_STREAMING_DB` (schemas `RAW`, `STAGING`, `ANALYTICS`, plus `OPS` for load audit and reconciliation), the XS warehouse `STREAMFORGE_WH` (60 s auto-suspend) capped by the `STREAMFORGE_MONITOR` resource monitor (5 credits per month), and the least-privilege role `STREAMFORGE_ROLE`. See `docs/snowflake.md`.
 
@@ -75,8 +66,13 @@ Uses SQL and dbt for deduplication, incremental transformations, and analytical 
 ### 3.7 Dashboard
 Uses Streamlit to present order metrics, revenue trends, payment performance, and fulfilment insights. Implemented in `streamforge.dashboard` (`streamlit run src/streamforge/dashboard/app.py`): Executive Overview, Orders, Products, Geography and Pipeline Health tabs read the dbt ANALYTICS and OPS models read-only as STREAMFORGE_ROLE, show money per currency only, and cache query results for 10 minutes. See `docs/dashboard.md`.
 
-### 3.8 Orchestration and Archival
-Airflow manages scheduled workflows and reconciliation. AWS S3 stores raw event archives.
+### 3.8 Orchestration and Archival (roadmap)
+**Not implemented.** Today every step is started by hand: the producer, the consumer (`--stop-when-idle` or until stopped), `dbt/run_dbt.py build` and the dashboard. There is no scheduler and no archive.
+
+Planned, outside the MVP scope:
+- **Apache Airflow** to schedule dbt builds and reconciliation checks.
+- **AWS S3** to archive raw events beyond Kafka retention.
+- **Snowflake Streams and Tasks** as an alternative for incremental processing inside Snowflake.
 
 ## 4. Event Processing Lifecycle
 
@@ -90,6 +86,37 @@ Airflow manages scheduled workflows and reconciliation. AWS S3 stores raw event 
 8. Publish analytical datasets.
 9. Display business metrics through Streamlit.
 
+### 4.1 Consumer commit protocol
+
+Offsets are committed only after every record in the batch is safely stored: invalid records confirmed in the DLQ, valid records committed in Snowflake. A failure at any step commits nothing, so the batch is redelivered. The RAW `MERGE` makes the redelivery duplicate-free in RAW; the DLQ index skips records already dead-lettered, except in the concurrent-publish and retention cases listed in [`docs/reliability.md`](reliability.md#known-limitations).
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant K as Redpanda (ecommerce.events)
+    participant C as Consumer
+    participant I as DLQ index
+    participant D as Redpanda (DLQ)
+    participant S as Snowflake RAW + OPS
+    C->>K: consume() up to batch_size records
+    C->>C: classify: valid / invalid (parse_event)
+    opt batch has invalid records
+        C->>I: refresh (read DLQ messages appended since last read)
+        I-->>C: identities already dead-lettered
+        C->>D: publish only missing records (acks=all, wait for every delivery)
+        D-->>C: all deliveries confirmed
+    end
+    opt batch has valid records
+        C->>S: BEGIN, MERGE per event-type table on (topic, partition, offset), audit row, COMMIT
+        S-->>C: rows inserted + duplicates skipped
+    end
+    C->>C: check every record is accounted for
+    C->>K: commit last offset + 1 per partition (synchronous)
+    Note over C,K: Any failure before the commit, after bounded retries:<br/>stop with nothing committed, so the batch is redelivered on restart
+```
+
+Details and the tested failure scenarios: [`docs/consumer.md`](consumer.md) and [`docs/reliability.md`](reliability.md).
+
 ## 5. Reliability and Fault Tolerance
 
 - Unique event IDs support deduplication.
@@ -100,6 +127,8 @@ Airflow manages scheduled workflows and reconciliation. AWS S3 stores raw event 
 - Replay mechanisms support recovery.
 - Data quality checks identify missing, duplicate, and inconsistent records.
 
+Delivery is **at-least-once**, made safe by idempotent sinks (RAW `MERGE` on Kafka coordinates, DLQ de-duplication index). It is **not exactly-once end to end**: two consumers can still dead-letter the same record twice if one is evicted from the group while still running (including when it is stuck in retries against a degraded broker), and an expired DLQ entry can be re-created by a replay. Both produce duplicate DLQ entries, not lost records. Guarantees, the 11 failure-injection scenarios and known limitations are in [`docs/reliability.md`](reliability.md).
+
 ## 6. Security and Cost Controls
 
 - Credentials are stored in environment variables.
@@ -108,29 +137,32 @@ Airflow manages scheduled workflows and reconciliation. AWS S3 stores raw event 
 - Small compute resources are preferred during development.
 - AWS services are introduced only when required.
 
-## 7. Initial Performance Targets
+## 7. Performance
 
-These are engineering targets, not measured results:
+**No throughput or latency has been measured yet.** The figures below are the original design targets, not results:
 
-| Metric | Target |
-|---|---:|
-| Event throughput | 100 events/sec |
-| Dashboard freshness | Under 10 seconds |
-| Duplicate business records | 0 |
-| Event accounting | All accepted events reconciled |
-| Recovery | Successful replay after restart |
+| Metric | Design target | Measured |
+|---|---:|---|
+| Event throughput | 100 events/sec | Not measured |
+| Dashboard freshness | Under 10 seconds | Not met by design: the dashboard is as fresh as the last manual dbt build plus a 10-minute query cache |
+| Duplicate business records | 0 | RAW: duplicate-free per Kafka message (`MERGE`); STAGING: deduplicated by `event_id`. Verified by tests, not by a load test |
+| Event accounting | All accepted events reconciled | Checked per batch before every commit; `OPS.OPS_INGESTION_RECONCILIATION` and dbt tests compare RAW with the audit |
+| Recovery | Successful replay after restart | Verified by the Redpanda failure-injection tests (`tests/integration/test_consumer_recovery.py`) |
 
-Actual performance will be benchmarked and documented.
+A local benchmark is planned (M9); until then no throughput figure should be quoted.
 
-## 8. Implementation Strategy
+## 8. Implementation Status
 
-The project will be developed incrementally, prioritising a working end-to-end MVP:
-
-1. Event simulation
-2. Redpanda infrastructure
-3. Snowflake ingestion
-4. Data transformation
-5. Data quality and reliability
-6. Dashboard
-7. Orchestration and archival
-8. Testing and performance evaluation
+| Milestone | Scope | Status |
+|---|---|---|
+| M0 | Packaging and configuration (`streamforge.common.config`) | Done |
+| M1 | Event contract and deterministic simulator | Done |
+| M2 | Local Redpanda (Docker Compose, topic creation) | Done |
+| M3 | Kafka producer | Done |
+| M4 | Snowflake database, warehouse, role and resource monitor | Done |
+| M5 | Consumer: Kafka → Snowflake RAW + DLQ | Done |
+| M6 | dbt transformations (STAGING, ANALYTICS, OPS) | Done |
+| M7 | Streamlit dashboard | Done |
+| M8 | Reliability: DLQ index, failure-injection tests, `docs/reliability.md` | Done |
+| M9 | Production readiness and portfolio: documentation, CI, reproducibility, demo, benchmark | In progress |
+| — | Orchestration (Airflow), archival (S3), Snowflake Streams/Tasks | Roadmap |
