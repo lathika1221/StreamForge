@@ -274,9 +274,7 @@ class DlqIndex:
         # Assign once and keep the reader on these partitions between refreshes. If
         # partitions are added/removed, reassign at the last confirmed positions.
         if partitions != self._assigned_partitions:
-            starts = {
-                p: max(low, self._positions.get(p, low)) for p, (low, _) in marks.items()
-            }
+            starts = {p: max(low, self._positions.get(p, low)) for p, (low, _) in marks.items()}
             self._reader.assign(
                 [TopicPartition(self._topic, p, starts[p]) for p in sorted(partitions)]
             )
