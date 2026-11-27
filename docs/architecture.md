@@ -139,11 +139,11 @@ Delivery is **at-least-once**, made safe by idempotent sinks (RAW `MERGE` on Kaf
 
 ## 7. Performance
 
-The original design targets, with what has been measured. Throughput was measured locally for the Kafka path only (single local Redpanda broker, Snowflake replaced by an in-memory sink); see [`docs/benchmark.md`](benchmark.md):
+The original design targets, with what has been measured. Throughput was measured for the Kafka path only (single Redpanda broker, Snowflake replaced by an in-memory sink), on a laptop and on GitHub-hosted runners; see [`docs/benchmark.md`](benchmark.md):
 
 | Metric | Design target | Measured |
 |---|---:|---|
-| Event throughput | 100 events/sec | Producer: 3,732 (2,000 events) to 16,644 events/s (10,000 events), medians of 3 runs. Consumer without Snowflake: 41–43 events/s at batch 100 and 202–214 at batch 500 with 5 % invalid records (each such batch spends about 2.5 s on DLQ index refreshes); 32,473 events/s with no invalid records. **Below target at batch 100 when invalid records are common.** Snowflake loading not measured |
+| Event throughput | 100 events/sec | Producer: 3,732 (2,000 events) to 16,644 events/s (10,000 events) on the laptop and 3,956 to 19,543 events/s on a GitHub runner, medians of 3 runs. Consumer without Snowflake, 5 % invalid records: 41–43 events/s at batch 100 and 202–214 at batch 500 before the DLQ refresh optimisation (about 2.5 s per batch with an invalid record); after it (PR #1, GitHub runners) 101–105 and 503–519 events/s (about 1.0 s per such batch). 32,473 events/s with no invalid records (laptop, before the optimisation). **Meets the target at batch 100 only just, after the optimisation.** Snowflake loading not measured |
 | Dashboard freshness | Under 10 seconds | Not met by design: the dashboard is as fresh as the last manual dbt build plus a 10-minute query cache |
 | Duplicate business records | 0 | RAW: duplicate-free per Kafka message (`MERGE`); STAGING: deduplicated by `event_id`. Verified by tests, not by a load test |
 | Event accounting | All accepted events reconciled | Checked per batch before every commit; `OPS.OPS_INGESTION_RECONCILIATION` and dbt tests compare RAW with the audit |

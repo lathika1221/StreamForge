@@ -239,3 +239,59 @@ def test_anomaly_counts():
         "sequence_gap": 2,
     }
     assert metrics.anomaly_counts(pd.DataFrame()).empty
+
+
+# ----------------------------------------------------------- recent batches view
+
+
+def test_recent_batches_view_keeps_every_figure_in_a_compact_form():
+    recon = pd.DataFrame(
+        [
+            {
+                "batch_id": "0123456789abcdef0123456789abcdef",
+                "records_consumed": 10,
+                "valid_records": 9,
+                "rows_inserted": 8,
+                "duplicates_skipped": 1,
+                "dlq_records": 1,
+                "raw_rows": 8,
+                "rows_match": True,
+                "accounting_ok": True,
+                "load_accounting_ok": True,
+                "started_at_utc": None,
+                "loaded_at_utc": pd.Timestamp("2026-11-25 08:55:34", tz="UTC"),
+            },
+            {
+                "batch_id": "demo-0002",
+                "records_consumed": 5,
+                "valid_records": 5,
+                "rows_inserted": 4,
+                "duplicates_skipped": 0,
+                "dlq_records": 0,
+                "raw_rows": 3,
+                "rows_match": False,
+                "accounting_ok": True,
+                "load_accounting_ok": False,
+                "started_at_utc": None,
+                "loaded_at_utc": None,
+            },
+        ]
+    )
+    view = metrics.recent_batches_view(recon)
+    assert list(view.columns) == metrics.RECENT_BATCH_COLUMNS
+    first, second = view.to_dict("records")
+    assert first["Loaded (UTC)"] == "25 Nov 08:55" and first["Batch"] == "01234567…"
+    assert (first["Consumed"], first["Valid"], first["Inserted"], first["Duplicates"]) == (
+        10,
+        9,
+        8,
+        1,
+    )
+    assert (first["DLQ"], first["RAW rows"], first["Checks"]) == (1, 8, "OK")
+    assert second["Batch"] == "demo-0002" and second["Loaded (UTC)"] == "—"
+    assert second["Checks"] == "Failed: rows, load"
+
+
+def test_recent_batches_view_handles_no_batches():
+    view = metrics.recent_batches_view(pd.DataFrame())
+    assert view.empty and list(view.columns) == metrics.RECENT_BATCH_COLUMNS

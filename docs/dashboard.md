@@ -31,7 +31,11 @@ Run it from the repo root, so `.env` and `.streamlit/config.toml` are found. It 
 | Orders | Orders by current status; payment status distribution; orders per day by currency; net revenue per day for the selected currency | `ANALYTICS.FCT_ORDERS` (`current_status, payment_status, currency, order_date, has_order_created`) and `AGG_DAILY_ORDERS` |
 | Products | Top-selling products by units; net revenue per product; SKU table (units, orders, gross, net) for the selected currency | `ANALYTICS.AGG_DAILY_PRODUCT_SALES` (`sku, product_name, currency, units, orders, gross_value, net_value`) |
 | Geography | Orders and net revenue by `shipping_country` (ISO code), with a table | `ANALYTICS.FCT_ORDERS` (`shipping_country, currency, order_total, payment_status, cancelled_at_utc`) |
-| Pipeline Health | Batches, records consumed, rows inserted and duplicates skipped; reconciliation status; dead-letter count and rate; last load time; data-quality anomalies; recent batches | `OPS.OPS_INGESTION_RECONCILIATION`, `OPS.OPS_ORDER_ANOMALIES` |
+| Pipeline Health | Batches, records consumed, rows inserted and duplicates skipped; reconciliation status; dead-letter count and rate; last load time; data-quality anomalies; recent batches (every batch, in a compact table: time to the minute, short batch id, all counts, and one **Checks** column that reads `OK` or names the failing checks: `rows`, `accounting`, `load`) | `OPS.OPS_INGESTION_RECONCILIATION`, `OPS.OPS_ORDER_ANOMALIES` |
+
+**Tables** are sized to their rows, so nothing is hidden behind an inner scroll bar (Streamlit's default shows at most ten rows); only the anomaly-details table inside its expander, which can hold up to 500 rows, keeps a scrolling height. Every column is wide enough for its heading and values.
+
+**Demo mode captions:** with `STREAMFORGE_DASHBOARD_DEMO` on, the sidebar caption and the Pipeline Health dead-letter note say the data is simulated and that no Snowflake, Kafka or audit table is read. Otherwise they describe the Snowflake source (`ECOMMERCE_STREAMING_DB` ANALYTICS/OPS as `STREAMFORGE_ROLE`; dead-letter figures from the consumer audit).
 
 ## Metric rules
 
@@ -57,7 +61,7 @@ Run it from the repo root, so `.env` and `.streamlit/config.toml` are found. It 
 
 | Command | Covers |
 |---|---|
-| `pytest` | `tests/unit/test_dashboard_metrics.py`: KPIs per currency, pooled rates, formatting, empty and null inputs, status, product, country and pipeline summaries. `test_dashboard_queries.py`: queries read-only and scoped, dates bound, money grouped by currency, role refusal, scrubbed errors, reconnect. `test_dashboard_app.py`: headless `AppTest` of the real app with fake data (all tabs, currency switching, caching, empty datasets, missing values, safe error display). |
+| `pytest` | `tests/unit/test_dashboard_metrics.py`: KPIs per currency, pooled rates, formatting, empty and null inputs, status, product, country and pipeline summaries. `test_dashboard_queries.py`: queries read-only and scoped, dates bound, money grouped by currency, role refusal, scrubbed errors, reconnect. `test_dashboard_app.py`: headless `AppTest` of the real app with fake data (all tabs, currency switching, caching, empty datasets, missing values, safe error display, production captions, every recent batch shown). `test_dashboard_demo.py`: demo mode (switch, no Snowflake, query columns, accounting, banner, demo captions, every SKU and batch row shown, all columns within the page width, all tables sized to their rows). |
 | `pytest -m snowflake tests/integration/test_dashboard_live.py` | Renders the app headlessly against the live models; the net-revenue card must equal the dbt aggregate. Suspends the warehouse afterwards. |
 
 ## Limitations

@@ -4,7 +4,7 @@
 
 An event-driven e-commerce data engineering pipeline: simulated order events stream through **Redpanda (Kafka API)**, are validated and loaded into **Snowflake** by a Python consumer, transformed with **dbt**, and presented in a **Streamlit** dashboard.
 
-> **Status:** MVP complete (milestones M0–M8) and tested locally. It runs on a developer machine with a single-node broker and an XS warehouse; it is a portfolio project, not a deployed production service. Throughput is measured only locally and only for the Kafka path ([`docs/benchmark.md`](docs/benchmark.md)). See [Limitations](#limitations).
+> **Status:** MVP complete (milestones M0–M8) and tested locally. It runs on a developer machine with a single-node broker and an XS warehouse; it is a portfolio project, not a deployed production service. Throughput is measured only for the Kafka path, on a laptop and on GitHub-hosted runners ([`docs/benchmark.md`](docs/benchmark.md)). See [Limitations](#limitations).
 
 ## The problem
 
@@ -151,6 +151,30 @@ The results in the table come from local runs. **CI** ([`.github/workflows/ci.ym
 
 Details, metric definitions and costs: [`docs/dashboard.md`](docs/dashboard.md).
 
+### Screenshots
+
+Captured from the [offline demo mode](docs/demo.md#dashboard-demo-mode) (simulated data, no Snowflake; INR selected, 16–23 Nov 2026), so they show no real business data.
+
+**Executive Overview**: per-currency KPIs and a summary table that never sums across currencies.
+
+![Executive Overview tab in demo mode](docs/images/dashboard-executive.png)
+
+**Orders**: status and payment distributions, orders per day by currency, net revenue per day.
+
+![Orders tab in demo mode](docs/images/dashboard-orders.png)
+
+**Products**: top sellers by units and net revenue, and every SKU for the selected currency.
+
+![Products tab in demo mode](docs/images/dashboard-products.png)
+
+**Geography**: orders and net revenue by shipping country.
+
+![Geography tab in demo mode](docs/images/dashboard-geography.png)
+
+**Pipeline Health**: ingestion and reconciliation, dead-letter rate, data-quality anomalies and every recent batch.
+
+![Pipeline Health tab in demo mode](docs/images/dashboard-pipeline-health.png)
+
 ## Engineering decisions
 
 - **At-least-once delivery with idempotent sinks**, rather than claiming exactly-once: RAW `MERGE` on Kafka coordinates and a DLQ index keyed on coordinates *plus* a SHA-256 of the message, so a reused offset with different content is never silently skipped.
@@ -165,7 +189,7 @@ Details, metric definitions and costs: [`docs/dashboard.md`](docs/dashboard.md).
 
 - **Not exactly-once end to end; the DLQ can contain duplicates.** Two consumers in one group can both dead-letter the same record if one is evicted from the group while still running (frozen, cut off from the coordinator, or stuck in retries against a degraded broker for longer than the 300 s poll interval). The result is a duplicate DLQ entry; the record itself is still dead-lettered. A unit test reproduces this. Kafka transactions would close it but are not implemented.
 - **DLQ retention.** If a DLQ entry expires (or the DLQ's retention is shortened) while its source message is still retained, replaying that message dead-letters it again: another duplicate DLQ entry.
-- **Throughput, measured locally for the Kafka path only** ([`docs/benchmark.md`](docs/benchmark.md)): the producer reached about 3,700–16,600 events/s on one local broker. The consumer, with Snowflake replaced by an in-memory sink, reached over 30,000 events/s without invalid records, but only about 40–210 events/s (batch size 100–500) with 5 % invalid records. Each batch containing an invalid record spends about 2.5 s refreshing the DLQ de-duplication index, so it falls below the 100 events/s design target at batch size 100. Snowflake loading, the likely production bottleneck, is not measured.
+- **Throughput, measured for the Kafka path only** ([`docs/benchmark.md`](docs/benchmark.md); one Redpanda broker, Snowflake replaced by an in-memory sink): the producer reached about 3,700–19,500 events/s (laptop and GitHub runner). With 5 % invalid records the consumer first reached only about 40–210 events/s (batch size 100–500), because each batch containing an invalid record spent about 2.5 s refreshing the DLQ de-duplication index. After the DLQ refresh optimisation (PR #1) it reached 101–105 events/s at batch size 100 and 503–519 at batch size 500 on GitHub runners (median batch time about 1.0 s), just meeting the 100 events/s design target at batch size 100; the optimised consumer has not been re-measured on the laptop. Without invalid records the consumer exceeded 30,000 events/s (laptop, before the optimisation). Snowflake loading, the likely production bottleneck, is not measured.
 - **Manual orchestration.** The consumer, dbt and dashboard refresh are run by hand; dashboard data is as fresh as the last dbt build (plus a 10-minute cache).
 - **Single local broker** (one replica), no high availability. Several consumers in one group are supported and tested locally, but nothing is deployed or supervised.
 - **Audit coverage:** batches containing only invalid records get no row in `OPS.INGESTION_BATCHES` (they are fully visible in the DLQ and the consumer's logs).
@@ -173,8 +197,7 @@ Details, metric definitions and costs: [`docs/dashboard.md`](docs/dashboard.md).
 
 ## Roadmap
 
-- Dashboard screenshots (captured from the demo mode, see [`docs/demo.md`](docs/demo.md#screenshots)).
-- Remove the DLQ index refresh cost (one refresh per batch, a persistent reader) and re-run local and GitHub-runner benchmarks to measure the before/after change.
+- Reduce the remaining DLQ index wait (about 1 s per batch that contains an invalid record) and re-measure the optimised consumer on the laptop.
 - Orchestration with Airflow, raw-event archival to S3, Snowflake Streams/Tasks.
 - Optional Kafka transactions to close the concurrent dead-letter race.
 

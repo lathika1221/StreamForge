@@ -65,7 +65,7 @@ Tested by `tests/unit/test_demo_pipeline.py` (file sink, safety, arguments; no b
 
 ## Screenshots
 
-Screenshots for the README are captured by hand from the dashboard demo mode, so they never show real data:
+The README's screenshots ([`README.md`](../README.md#screenshots)) are taken from the dashboard demo mode, so they never show real data. To re-take them:
 
 1. Start the dashboard in demo mode (above) and open it at full width (about 1440 px).
 2. Leave the default date range (16–23 Nov 2026); select the currency named below.
@@ -79,4 +79,4 @@ Screenshots for the README are captured by hand from the dashboard demo mode, so
 | `docs/images/dashboard-geography.png` | Geography | INR |
 | `docs/images/dashboard-pipeline-health.png` | Pipeline Health | (any) |
 
-Keep the **Demo mode** banner visible in each image. The README links them once they exist.
+Keep the **Demo mode** banner visible in each image. The current images were captured on 2026-11-27 with headless Chrome at a 1440 px viewport, full page height.

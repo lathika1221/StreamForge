@@ -227,3 +227,22 @@ def test_money_columns_keep_two_decimal_format(monkeypatch):
 
 def test_app_uses_no_deprecated_container_width_argument():
     assert "use_container_width" not in Path(APP).read_text("utf-8")
+
+
+def test_production_mode_keeps_the_snowflake_captions(monkeypatch):
+    """With a real (non-demo) runner the captions still describe the Snowflake source."""
+    at = run_app(monkeypatch, FakeRunner(frames()))
+    assert not at.exception
+    sidebar = " ".join(c.value for c in at.sidebar.caption)
+    assert "Data from ECOMMERCE_STREAMING_DB (ANALYTICS, OPS) as STREAMFORGE_ROLE." in sidebar
+    assert "Demo data" not in sidebar
+    assert "Dead-letter figures come from the consumer audit in Snowflake." in text(at)
+    assert not at.warning  # no demo banner
+
+
+def test_recent_batches_table_shows_every_batch(monkeypatch):
+    batch = frames()[queries.RECONCILIATION_SQL].iloc[0].to_dict()
+    many = pd.DataFrame([{**batch, "batch_id": f"{i:032x}"} for i in range(12)])
+    at = run_app(monkeypatch, FakeRunner(frames(**{queries.RECONCILIATION_SQL: many})))
+    view = next(df.value for df in at.dataframe if "Checks" in df.value.columns)
+    assert len(view) == 12 and list(view.columns) == metrics.RECENT_BATCH_COLUMNS

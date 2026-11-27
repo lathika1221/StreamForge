@@ -48,6 +48,14 @@ def _load(fetch, *args) -> pd.DataFrame | None:
         return None
 
 
+def _is_demo() -> bool:
+    """True when the active runner serves the offline demo data (never raises)."""
+    try:
+        return bool(getattr(_runner(), "is_demo", False))
+    except data.DashboardDataError:
+        return False  # no runner (e.g. Snowflake not configured): not demo mode
+
+
 def empty(message: str) -> None:
     st.markdown(f'<div class="sf-empty">{message}</div>', unsafe_allow_html=True)
 
@@ -56,11 +64,13 @@ def section(title: str) -> None:
     st.markdown(f'<div class="sf-section">{title}</div>', unsafe_allow_html=True)
 
 
-def table(df: pd.DataFrame, money_columns: tuple[str, ...] = ()) -> None:
+def table(df: pd.DataFrame, money_columns: tuple[str, ...] = (), *, fit_rows: bool = True) -> None:
     """Show a table with every column wide enough for its header and values.
 
     Money columns keep 2-decimal formatting. Columns stretch to the container when they
     fit; otherwise the table scrolls horizontally instead of clipping a column.
+    ``fit_rows`` sizes the table to its rows (Streamlit's default "auto" height shows at
+    most ten and hides the rest behind an inner scroll bar); pass False for long tables.
     """
     config = {}
     for col in df.columns:
@@ -75,7 +85,13 @@ def table(df: pd.DataFrame, money_columns: tuple[str, ...] = ()) -> None:
                 for v in values
             ]
             config[col] = st.column_config.Column(col, width=theme.column_width(col, texts))
-    st.dataframe(df, hide_index=True, width="stretch", column_config=config)
+    st.dataframe(
+        df,
+        hide_index=True,
+        width="stretch",
+        height="content" if fit_rows else "auto",
+        column_config=config,
+    )
 
 
 def cards(items: list[tuple[str, str, str, str]]) -> None:
@@ -86,7 +102,7 @@ def cards(items: list[tuple[str, str, str, str]]) -> None:
 # ------------------------------------------------------------------- sidebar
 
 
-def sidebar(bounds: tuple[date | None, date | None]) -> tuple[date, date]:
+def sidebar(bounds: tuple[date | None, date | None], demo: bool = False) -> tuple[date, date]:
     lo, hi = bounds
     today = date.today()
     end = hi or today
@@ -107,10 +123,16 @@ def sidebar(bounds: tuple[date | None, date | None]) -> tuple[date, date]:
         if st.button("Refresh data", width="stretch"):
             st.cache_data.clear()
             st.rerun()
-        st.caption(
-            f"Data from ECOMMERCE_STREAMING_DB (ANALYTICS, OPS) as STREAMFORGE_ROLE. "
-            f"Cached for {CACHE_TTL_SECONDS // 60} minutes."
-        )
+        if demo:
+            st.caption(
+                "Demo data: simulated locally by the StreamForge simulator; no Snowflake "
+                f"connection. Cached for {CACHE_TTL_SECONDS // 60} minutes."
+            )
+        else:
+            st.caption(
+                f"Data from ECOMMERCE_STREAMING_DB (ANALYTICS, OPS) as STREAMFORGE_ROLE. "
+                f"Cached for {CACHE_TTL_SECONDS // 60} minutes."
+            )
         if lo and hi:
             st.caption(f"Available order dates: {lo:%d %b %Y} – {hi:%d %b %Y}")
     return start, end
@@ -329,7 +351,7 @@ def geography_tab(countries: pd.DataFrame, currency: str | None) -> None:
     table(country_table, money_columns=tuple(c for c in country_table.columns if "(" in c))
 
 
-def pipeline_tab(recon: pd.DataFrame, anomalies: pd.DataFrame) -> None:
+def pipeline_tab(recon: pd.DataFrame, anomalies: pd.DataFrame, demo: bool = False) -> None:
     s = metrics.pipeline_summary(recon)
     if s.batches == 0:
         empty("No ingestion batches recorded yet.")
@@ -374,12 +396,15 @@ def pipeline_tab(recon: pd.DataFrame, anomalies: pd.DataFrame) -> None:
             ),
         ]
     )
-    st.markdown(
-        '<div class="sf-note">Dead-letter figures come from the consumer audit in '
-        "Snowflake. The DLQ messages themselves stay in Kafka "
-        "(ecommerce.events.dlq) and are not queried here.</div>",
-        unsafe_allow_html=True,
+    note = (
+        "Demo data: dead-letter figures are derived from the simulated batches (invalid "
+        "records classified by the consumer's validation). No Kafka topic or Snowflake "
+        "audit table is read in demo mode."
+        if demo
+        else "Dead-letter figures come from the consumer audit in Snowflake. The DLQ "
+        "messages themselves stay in Kafka (ecommerce.events.dlq) and are not queried here."
     )
+    st.markdown(f'<div class="sf-note">{note}</div>', unsafe_allow_html=True)
 
     section("Data quality anomalies")
     a = metrics.anomaly_counts(anomalies)
@@ -388,33 +413,19 @@ def pipeline_tab(recon: pd.DataFrame, anomalies: pd.DataFrame) -> None:
     else:
         table(a.rename(columns={"anomaly": "Anomaly", "orders": "Orders"}))
         with st.expander("Anomaly details"):
-            table(anomalies)
+            table(anomalies, fit_rows=False)  # up to 500 rows: keep the scrolling height
 
     section("Recent batches")
-    view = metrics.ensure_columns(recon, metrics.RECON_COLUMNS)[
-        [
-            "loaded_at_utc",
-            "batch_id",
-            "records_consumed",
-            "valid_records",
-            "rows_inserted",
-            "duplicates_skipped",
-            "dlq_records",
-            "raw_rows",
-            "rows_match",
-            "accounting_ok",
-            "load_accounting_ok",
-        ]
-    ].rename(columns=lambda c: c.replace("_", " ").capitalize())
-    table(view)
+    table(metrics.recent_batches_view(recon))
 
 
 # ---------------------------------------------------------------------- page
 
 
 def main() -> None:
+    demo = _is_demo()
     bounds = _load(queries.date_bounds) or (None, None)
-    start, end = sidebar(bounds)
+    start, end = sidebar(bounds, demo)
 
     daily = _load(queries.daily_orders, start, end)
     recon = _load(queries.reconciliation)
@@ -431,7 +442,7 @@ def main() -> None:
         f"{start:%d %b %Y} – {end:%d %b %Y}</div></div>",
         unsafe_allow_html=True,
     )
-    if getattr(_runner(), "is_demo", False):
+    if demo:
         st.warning(
             "**Demo mode:** simulated data generated locally by the StreamForge simulator. "
             "Nothing is read from Snowflake; figures approximate the dbt models and are "
@@ -472,6 +483,7 @@ def main() -> None:
         pipeline_tab(
             recon if recon is not None else pd.DataFrame(),
             anomalies if anomalies is not None else pd.DataFrame(),
+            demo,
         )
 
 

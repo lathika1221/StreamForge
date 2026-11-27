@@ -8,6 +8,7 @@ an empty or partially-null DataFrame and returns something displayable.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 import pandas as pd
 
@@ -282,6 +283,54 @@ def pipeline_summary(recon: pd.DataFrame) -> PipelineSummary:
         dlq_records=int(recon["dlq_records"].sum()),
         failing_batches=failing,
         last_loaded_at=None if pd.isna(last) else last,
+    )
+
+
+RECENT_BATCH_COLUMNS = [
+    "Loaded (UTC)",
+    "Batch",
+    "Consumed",
+    "Valid",
+    "Inserted",
+    "Duplicates",
+    "DLQ",
+    "RAW rows",
+    "Checks",
+]
+_CHECK_LABELS = {"rows_match": "rows", "accounting_ok": "accounting", "load_accounting_ok": "load"}
+
+
+def _short_batch_id(value: Any) -> str:
+    text = "" if value is None or (not isinstance(value, str) and pd.isna(value)) else str(value)
+    return text if len(text) <= 12 else text[:8] + "…"  # 32-hex uuids: first 8 chars
+
+
+def recent_batches_view(recon: pd.DataFrame) -> pd.DataFrame:
+    """Compact per-batch table that fits the page width without hiding any figure.
+
+    Every count is kept; the three reconciliation flags are combined into one "Checks"
+    column ("OK", or "Failed: ..." naming the failing checks), timestamps are shortened to
+    day and minute, and long batch ids (32-hex uuids) are shown by their first 8 chars.
+    """
+    recon = to_numeric(ensure_columns(recon, RECON_COLUMNS), RECON_COUNTS)
+    loaded = pd.to_datetime(recon["loaded_at_utc"], utc=True, errors="coerce")
+    checks = recon[list(_CHECK_LABELS)].fillna(False).astype(bool)
+    failing = checks.apply(
+        lambda row: [label for col, label in _CHECK_LABELS.items() if not row[col]], axis=1
+    )
+    return pd.DataFrame(
+        {
+            "Loaded (UTC)": loaded.dt.strftime("%d %b %H:%M").fillna("—"),
+            "Batch": recon["batch_id"].map(_short_batch_id),
+            "Consumed": recon["records_consumed"].astype(int),
+            "Valid": recon["valid_records"].astype(int),
+            "Inserted": recon["rows_inserted"].astype(int),
+            "Duplicates": recon["duplicates_skipped"].astype(int),
+            "DLQ": recon["dlq_records"].astype(int),
+            "RAW rows": recon["raw_rows"].astype(int),
+            "Checks": failing.map(lambda f: "Failed: " + ", ".join(f) if f else "OK"),
+        },
+        columns=RECENT_BATCH_COLUMNS,
     )
 
 
