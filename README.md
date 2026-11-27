@@ -174,7 +174,7 @@ Details, metric definitions and costs: [`docs/dashboard.md`](docs/dashboard.md).
 ## Roadmap
 
 - Dashboard screenshots (captured from the demo mode, see [`docs/demo.md`](docs/demo.md#screenshots)).
-- Remove the DLQ index refresh cost (one refresh per batch, a persistent reader) and re-run the benchmark; add the GitHub-runner benchmark results.
+- Remove the DLQ index refresh cost (one refresh per batch, a persistent reader) and re-run local and GitHub-runner benchmarks to measure the before/after change.
 - Orchestration with Airflow, raw-event archival to S3, Snowflake Streams/Tasks.
 - Optional Kafka transactions to close the concurrent dead-letter race.
 

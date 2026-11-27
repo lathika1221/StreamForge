@@ -1,6 +1,6 @@
 # Kafka-Path Benchmark (M9.4)
 
-Measured throughput of the producer and the consumer against a **single local Redpanda broker**, with **no Snowflake**: the consumer's RAW writes go to an in-memory sink. These numbers describe this code on one laptop; they are not production capacity figures.
+Measured throughput of the producer and consumer against a **single Redpanda broker**, with **no Snowflake**: the consumer's RAW writes go to an in-memory sink. Results are reported separately for the local laptop and a GitHub-hosted runner; neither is a production-capacity claim.
 
 ## How to run it
 
@@ -37,7 +37,35 @@ Environment: Windows 11 (10.0.26300), AMD Ryzen 7 7435HS (8 cores, 16 logical CP
 
 Median batch processing time was 2,509–2,510 ms in every consumer run, at both batch sizes.
 
-**GitHub-hosted runner:** not yet run. Trigger the Benchmark workflow and add its job-summary table here.
+## Results: GitHub-hosted runner, 2026-11-27
+
+Environment: GitHub-hosted `ubuntu-latest` runner on Azure, AMD EPYC 9V74 (4 vCPUs allocated), 15,983 MiB RAM reported by `free -m` (12,778 MiB free at the hardware check), Linux 7.0.0-1020-azure x86_64 (glibc 2.43), Python 3.11.18, librdkafka 2.16.0, Redpanda v26.2.6. 3 runs per workload; 5 % invalid records. The uploaded `benchmark-results.json` artifact records the environment and all six runs.
+
+| Events | Measurement | Median | Min | Max |
+|---:|---|---:|---:|---:|
+| 2,000 | Producer, events/s | 3,956 | 2,398 | 3,964 |
+| 2,000 | Consumer, batch 100, events/s | 43 | 43 | 43 |
+| 2,000 | Consumer, batch 500, events/s | 214 | 214 | 214 |
+| 10,000 | Producer, events/s | 19,543 | 19,495 | 19,564 |
+| 10,000 | Consumer, batch 100, events/s | 41 | 41 | 42 |
+| 10,000 | Consumer, batch 500, events/s | 202 | 202 | 202 |
+
+Median batch p50 stayed around 2,502 ms across all consumer runs, irrespective of batch size.
+
+**Run:** [GitHub Actions Benchmark #1](https://github.com/lathika1221/StreamForge/actions/runs/45952350591) (success; 18m 24s). The `benchmark-results` artifact was uploaded successfully.
+
+## Cross-environment comparison
+
+| Events | Measurement | Local laptop median | GitHub runner median |
+|---:|---|---:|---:|
+| 2,000 | Producer, events/s | 3,732 | 3,956 |
+| 2,000 | Consumer, batch 100, events/s | 43 | 43 |
+| 2,000 | Consumer, batch 500, events/s | 214 | 214 |
+| 10,000 | Producer, events/s | 16,644 | 19,543 |
+| 10,000 | Consumer, batch 100, events/s | 41 | 41 |
+| 10,000 | Consumer, batch 500, events/s | 202 | 202 |
+
+The GitHub runner's producer median is about 6 % higher at 2,000 events and 17 % higher at 10,000 events. Consumer throughput is effectively the same on both machines. Together with the consistently ~2.5 s batch p50, this supports the measured DLQ index-refresh overhead as the current consumer bottleneck rather than a lack of CPU on the laptop. This comparison is specific to these two environments and this Kafka-path benchmark; it does not measure Snowflake or production capacity.
 
 ## What the numbers show
 
