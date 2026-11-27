@@ -189,14 +189,53 @@ def recent_dead_letters(
     )
 
 
+def _read_assigned_identities(
+    reader: Any,
+    dlq_topic: str,
+    positions: dict[int, int],
+    ends: dict[int, int],
+    *,
+    source_topic: str,
+    consumer_group: str,
+    timeout: float,
+    clock: Callable[[], float],
+) -> set[DlqIdentity]:
+    """Read to a watermark snapshot using an already-assigned reader.
+
+    Positions are local to one refresh. The caller commits them to the index only
+    after the complete snapshot is read; on failure it can seek back to the saved
+    starting positions and retry without losing identities from a partial scan.
+    """
+    found: set[DlqIdentity] = set()
+    todo = {p for p in ends if positions[p] < ends[p]}
+    if not todo:
+        return found
+    deadline = clock() + timeout
+    while any(positions[p] < ends[p] for p in todo) and clock() < deadline:
+        msg = reader.poll(0.1)
+        if msg is None or msg.error() is not None:
+            _advance_from_position(reader, dlq_topic, positions)
+            continue
+        partition = msg.partition()
+        positions[partition] = max(positions[partition], msg.offset() + 1)
+        identity = identity_from_headers(msg.headers(), source_topic, consumer_group)
+        if identity is not None:
+            found.add(identity)
+    if any(positions[p] < ends[p] for p in todo):
+        raise DlqError(f"could not read the DLQ {dlq_topic} within {timeout}s")
+    return found
+
+
 class DlqIndex:
     """Persistent DLQ de-duplication index, backed by the DLQ topic itself.
 
     The first :meth:`refresh` reads every retained DLQ message (from each partition's
     low watermark); later refreshes read only messages appended since the previous one.
-    The consumer refreshes before every DLQ publish, so records dead-lettered earlier -
-    by this process, by a crashed predecessor, or by another consumer instance that
-    owned the partition before a rebalance - are recognised regardless of age.
+    The reader stays assigned between refreshes, so incremental reads continue from its
+    existing positions instead of reassigning every batch. If retention advances a low
+    watermark, the reader seeks forward to the new low. The consumer refreshes once
+    before the first DLQ publish attempt in a batch, and again before each retry after a
+    failed send, so partial deliveries are found without a redundant pre-send scan.
 
     Completeness: a DLQ message is produced after its source record, so with equal
     retention on both topics (today both use the broker default) a source record that
@@ -223,27 +262,61 @@ class DlqIndex:
         self._timeout = timeout
         self._clock = clock
         self._positions: dict[int, int] = {}
+        self._assigned_partitions: set[int] = set()
         self._identities: set[DlqIdentity] = set()
         self.messages_read = 0
 
     def refresh(self) -> int:
         """Read DLQ messages appended since the last refresh; return new identities."""
         marks = _watermarks(self._reader, self._topic, self._timeout)
-        # Never move backwards; if retention removed old messages, start at the new low.
-        starts = {p: max(low, self._positions.get(p, low)) for p, (low, _) in marks.items()}
+        partitions = set(marks)
+
+        # Assign once and keep the reader on these partitions between refreshes. If
+        # partitions are added/removed, reassign at the last confirmed positions.
+        if partitions != self._assigned_partitions:
+            starts = {
+                p: max(low, self._positions.get(p, low)) for p, (low, _) in marks.items()
+            }
+            self._reader.assign(
+                [TopicPartition(self._topic, p, starts[p]) for p in sorted(partitions)]
+            )
+            self._assigned_partitions = partitions
+        else:
+            starts = {}
+            for p, (low, _) in marks.items():
+                current = self._positions.get(p, low)
+                starts[p] = max(low, current)
+                # Retention can move the low watermark beyond the reader's position.
+                if starts[p] > current:
+                    self._reader.seek(TopicPartition(self._topic, p, starts[p]))
+
         ends = {p: high for p, (_, high) in marks.items()}
-        found = _read_identities(
-            self._reader,
-            self._topic,
-            starts,
-            ends,
-            source_topic=self._source_topic,
-            consumer_group=self._group,
-            timeout=self._timeout,
-            clock=self._clock,
-        )
+        positions = dict(starts)
+        try:
+            found = _read_assigned_identities(
+                self._reader,
+                self._topic,
+                positions,
+                ends,
+                source_topic=self._source_topic,
+                consumer_group=self._group,
+                timeout=self._timeout,
+                clock=self._clock,
+            )
+        except Exception:
+            # A timed-out/failed scan may have advanced the Kafka reader without
+            # completing the index update. Rewind to the last confirmed positions so
+            # the next retry sees every record from this snapshot again.
+            try:
+                for p, offset in starts.items():
+                    self._reader.seek(TopicPartition(self._topic, p, offset))
+            except Exception:
+                # If a seek fails, force a clean assign on the next refresh.
+                self._assigned_partitions.clear()
+            raise
+
         self.messages_read += sum(max(0, ends[p] - starts[p]) for p in ends)
-        self._positions.update({p: max(starts[p], ends[p]) for p in ends})
+        self._positions.update({p: max(positions[p], ends[p]) for p in ends})
         before = len(self._identities)
         self._identities |= found
         return len(self._identities) - before

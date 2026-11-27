@@ -10,13 +10,13 @@ For each batch (`EventConsumer.process_batch`):
 
 1. **`consume()`** returns up to `--batch-size` messages. Partition assignment and revocation callbacks run only inside this call.
 2. **`classify()`** splits the messages into valid events and invalid records.
-3. **DLQ index refresh** reads any DLQ messages appended since the last refresh (only when the batch has invalid records).
-4. **DLQ publish** sends the invalid records that are not already in the DLQ, then waits for every delivery confirmation (`acks=all`, idempotent producer).
+3. **DLQ index refresh** reads any DLQ messages appended since the last refresh (only when the batch has invalid records). The reader remains assigned between refreshes; it seeks forward if retention advances a partition's low watermark.
+4. **DLQ publish** sends the invalid records that are not already in the DLQ, then waits for every delivery confirmation (`acks=all`, idempotent producer). The first attempt uses the refresh from step 3; a retry refreshes again before sending, so partial delivery is detected without a redundant scan before the first send.
 5. **RAW load** inserts the valid events and one audit row in **one Snowflake transaction**: a `MERGE` on `(KAFKA_TOPIC, KAFKA_PARTITION, KAFKA_OFFSET)`.
 6. **Accounting check:** valid = inserted + duplicates, and every invalid record is confirmed in the DLQ.
 7. **Synchronous offset commit** of the last processed offset + 1, per partition.
 
-Steps 3, 4, 5 and 7 each get `--max-attempts` attempts with exponential backoff. Each DLQ publish attempt refreshes the index again first. If a step still fails, the consumer stops with exit code 1 and **no offset is committed** for that batch.
+The index refresh, DLQ publish, RAW load and offset commit each get `--max-attempts` attempts with exponential backoff. The first DLQ publish uses the batch-level index refresh; after a failed send, each retry refreshes the index before recalculating the pending records. This preserves partial-delivery de-duplication while avoiding a second scan on the normal first attempt. If a step still fails, the consumer stops with exit code 1 and **no offset is committed** for that batch.
 
 ## Guarantees
 
@@ -37,7 +37,7 @@ The index is built from the DLQ topic itself, so it needs no extra storage, tabl
   - A different record at a reused offset (for example, after the topic was recreated) is never suppressed.
   - Entries with incomplete headers are ignored, so they never cause a skip.
 - **Startup:** a full scan of the retained DLQ, from each partition's low watermark. (The M5 version scanned only the last `2 × batch_size` messages, so replaying older offsets duplicated DLQ entries.)
-- **During the run:** an incremental refresh before every DLQ publish attempt reads only newly appended DLQ messages. This picks up:
+- **During the run:** one incremental refresh happens before the first DLQ publish attempt in each batch. If a send fails, the retry refreshes again and reads only newly appended DLQ messages. This picks up:
   - entries written by a crashed predecessor;
   - entries written by the previous owner of a partition after a rebalance;
   - entries actually delivered by a failed attempt (partial delivery, or a timeout after the broker stored the message). In M5 such a retry re-sent the whole list; that bug is fixed.
@@ -54,7 +54,7 @@ Within one consumer group, Kafka gives each partition to exactly one member per 
 `test_concurrent_publish_between_refresh_and_send_can_duplicate_but_never_loses` reproduces this deliberately. There is no claim of duplicate-free *concurrent* publishing.
 
 **How small the window is:**
-- The refresh and the publish happen back to back, right after `consume()`.
+- The batch-level refresh and first publish happen back to back, right after `consume()`; there is no redundant second refresh between them. A failed publish triggers a fresh scan before retrying.
 - With a healthy broker the refresh and publish take milliseconds, far below the 300 s poll interval.
 - **With a degraded broker the step is not guaranteed to fit inside 300 s.** There is no overall deadline per batch, only per-call timeouts (defaults, one DLQ partition):
   - One refresh can take up to about 90 s: 30 s metadata, plus 30 s watermarks per DLQ partition, plus 30 s reading.

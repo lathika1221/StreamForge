@@ -292,7 +292,18 @@ class EventConsumer:
                 self._retry("DLQ index refresh", self._dlq_index.refresh)
             new_dlq = sum(1 for i in invalid if _coords(i) not in self._dead_lettered)
             if new_dlq:
-                self._retry("DLQ publish", lambda: self._publish_missing(invalid))
+                first_publish_attempt = True
+
+                def publish_missing() -> None:
+                    nonlocal first_publish_attempt
+                    # The batch-level refresh above is sufficient for the first send.
+                    # After a failed send, refresh again before retrying so any messages
+                    # delivered before the failure are discovered and not duplicated.
+                    refresh_index = not first_publish_attempt
+                    first_publish_attempt = False
+                    self._publish_missing(invalid, refresh_index=refresh_index)
+
+                self._retry("DLQ publish", publish_missing)
         result = SinkResult(0, 0)
         if valid:
             result = self._retry("Snowflake RAW load", lambda: self._sink.write_batch(valid, batch))
@@ -338,14 +349,16 @@ class EventConsumer:
             {f"{tp.partition}": tp.offset for tp in offsets},
         )
 
-    def _publish_missing(self, invalid: Sequence[InvalidRecord]) -> None:
-        """Publish the invalid records that are not yet in the DLQ (one retry attempt).
+    def _publish_missing(
+        self, invalid: Sequence[InvalidRecord], *, refresh_index: bool = True
+    ) -> None:
+        """Publish records not yet in the DLQ.
 
-        Each attempt re-reads the DLQ first (when an index is used), so records that a
-        failed attempt did deliver - partial delivery, or a delivery timeout after the
-        broker had already stored the message - are found and not published twice.
+        The first attempt uses the batch-level refresh already completed by
+        process_batch. A retry refreshes first, so partial delivery (or a timeout
+        after broker storage) is discovered before calculating the pending records.
         """
-        if self._dlq_index is not None:
+        if refresh_index and self._dlq_index is not None:
             self._dlq_index.refresh()
         pending = [i for i in invalid if _coords(i) not in self._dead_lettered]
         if pending:
