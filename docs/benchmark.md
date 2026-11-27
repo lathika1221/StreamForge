@@ -54,6 +54,41 @@ Median batch p50 stayed around 2,502 ms across all consumer runs, irrespective o
 
 **Run:** [GitHub Actions Benchmark #1](https://github.com/lathika1221/StreamForge/actions/runs/45952350591) (success; 18m 24s). The `benchmark-results` artifact was uploaded successfully.
 
+## DLQ index-refresh optimization: before and after
+
+The M8 DLQ-index optimization was measured with the same Kafka-path benchmark, workload sizes, batch sizes, 5 % invalid-record rate and three repeats per size. The baseline is Benchmark #1 on `main`; the optimized run is Benchmark #4 on `perf/dlq-index-refresh`.
+
+| Events | Consumer batch | Before, events/s | After, events/s | Throughput change |
+|---:|---:|---:|---:|---:|
+| 2,000 | 100 | 43 | 101 | +134.9 % (2.35×) |
+| 2,000 | 500 | 214 | 519 | +142.5 % (2.43×) |
+| 10,000 | 100 | 41 | 105 | +156.1 % (2.56×) |
+| 10,000 | 500 | 202 | 503 | +149.0 % (2.49×) |
+
+### Batch processing time
+
+| Events | Consumer batch | Before, median ms | After, median ms | Reduction |
+|---:|---:|---:|---:|---:|
+| 2,000 | 100 | 2,501.9 | 1,001.1 | 60.0 % |
+| 2,000 | 500 | 2,502.1 | 1,000.9 | 60.0 % |
+| 10,000 | 100 | 2,501.9 | 1,001.1 | 60.0 % |
+| 10,000 | 500 | 2,502.3 | 1,000.9 | 60.0 % |
+
+Optimized-run median/min/max throughput across the three repeats:
+
+| Events | Measurement | Median | Min | Max |
+|---:|---|---:|---:|---:|
+| 2,000 | Consumer, batch 100, events/s | 101 | 100 | 101 |
+| 2,000 | Consumer, batch 500, events/s | 519 | 519 | 519 |
+| 10,000 | Consumer, batch 100, events/s | 105 | 100 | 105 |
+| 10,000 | Consumer, batch 500, events/s | 503 | 503 | 503 |
+
+**Runs:** [Baseline Benchmark #1](https://github.com/lathika1221/StreamForge/actions/runs/45952350591), commit `09e499a`; [optimized Benchmark #4](https://github.com/lathika1221/StreamForge/actions/runs/45959959941), commit `42bec00`. Both completed successfully and uploaded the `benchmark-results` artifact.
+
+**Runner comparability:** both runs used GitHub-hosted Azure Linux runners with 4 allocated vCPUs, 15,983 MiB reported RAM, Python 3.11.18, librdkafka 2.16.0 and Redpanda v26.2.6. The reported CPU models differed: baseline AMD EPYC 9V74 80-Core; optimized AMD EPYC 9V45 96-Core. Treat this as a strong same-workload before/after result, not a perfectly controlled same-CPU experiment. Producer medians were broadly stable (3,956 → 3,968 events/s for 2,000 events; 19,543 → 19,634 events/s for 10,000 events), while consumer throughput increased by roughly 2.4–2.6×.
+
+The benchmark's accounting checks passed for every run: consumed records equalled the workload size, RAW rows equalled valid records, and DLQ records equalled invalid records. This benchmark still uses an in-memory RAW sink and a single ephemeral broker; it does not measure Snowflake throughput or production capacity.
+
 ## Cross-environment comparison
 
 | Events | Measurement | Local laptop median | GitHub runner median |
@@ -71,21 +106,18 @@ The GitHub runner's producer median is about 6 % higher at 2,000 events and 17 %
 
 **Producer.** Several thousand events per second on one local broker. The 2,000-event runs are slower per event than the 10,000-event runs because fixed costs (connection set-up, the final flush) weigh more on a short run.
 
-**Consumer: limited by the DLQ index refresh, not by validation or Kafka.** A diagnostic run of 1,000 events at batch size 100 isolated the cost:
+**Consumer before the M8 optimization.** A diagnostic run of 1,000 events at batch size 100 isolated the original cost:
 
 | Invalid records | Consumer throughput | Median batch time | DLQ index refreshes |
 |---|---:|---:|---|
 | 0 % | 32,473 events/s | 3 ms | 1 (start-up), 6 ms |
 | 5 % | 47 events/s | 2,509 ms | 21, median 1,003 ms each |
 
-The DLQ publish itself takes about 2 ms. When a batch contains an invalid record, the M8 consumer refreshes the DLQ index before the duplicate check and again inside the publish step. A refresh that has new DLQ messages to read re-assigns its reader and waits about one fetch round (roughly a second). With 5 % invalid records almost every batch contains one, so each batch costs about 2.5 s regardless of its size, and throughput scales with batch size. Without invalid records, the same consumer processes over 30,000 events per second on this machine.
+The pre-optimization path refreshed the DLQ index before the duplicate check and again inside the first publish attempt. The index reader was also reassigned on incremental refresh. The 5 % invalid-record workload therefore incurred around 2.5 seconds per batch.
 
-So the consumer currently falls **below** the original design target of 100 events/s at batch size 100 whenever invalid records are common, and meets it at batch size 500. Possible fixes (none implemented):
-- skip the second refresh when the batch-level refresh has just run;
-- keep the index reader assigned between refreshes instead of re-assigning;
-- lower the reader's fetch wait.
+**Implemented M8 changes.** The first DLQ publish attempt now reuses the batch-level refresh; a failed send still refreshes before retry so partial deliveries are detected. The DLQ reader remains assigned between incremental refreshes and seeks forward when retention advances the low watermark. Failed scans rewind to the last confirmed positions.
 
-Each changes M8 code and must keep the duplicate-safety tests passing.
+The before/after results above show that this optimization increased consumer throughput by 2.35–2.56× and reduced measured median batch processing time by about 60 % on the tested GitHub runners. The no-invalid-record diagnostic remains a separate pre-optimization diagnostic and is not a post-change measurement.
 
 ## What is not measured
 
