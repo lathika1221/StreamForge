@@ -74,11 +74,12 @@ class DlqLog:
 
 
 class LogReader:
-    """Kafka-consumer stand-in used by DlqIndex (assign/poll/position only)."""
+    """Kafka-consumer stand-in used by DlqIndex (assign/seek/poll/position only)."""
 
     def __init__(self, log, *, stall_polls=0):
         self.log, self.stall_polls = log, stall_polls
-        self.assignments, self.closed, self.polls = [], False, 0
+        self.assignments, self.seek_calls, self.closed, self.polls = [], [], False, 0
+        self.pos, self.cursors = {}, {}
 
     def list_topics(self, topic=None, timeout=None):
         parts = {p: None for p in self.log.entries}
@@ -87,27 +88,42 @@ class LogReader:
     def get_watermark_offsets(self, tp, timeout=None):
         return self.log.low[tp.partition], self.log.high[tp.partition]
 
+    def _cursor(self, partition, offset):
+        entries = self.log.entries[partition]
+        return next((i for i, (off, _) in enumerate(entries) if off >= offset), len(entries))
+
     def assign(self, tps):
         self.assignments.append({tp.partition: tp.offset for tp in tps})
-        self.pos = {tp.partition: max(tp.offset, self.log.low[tp.partition]) for tp in tps}
-        self.queue = [
-            (p, off, h)
-            for p in sorted(self.pos)
-            for off, h in self.log.entries[p]
-            if off >= self.pos[p]
-        ]
+        self.pos, self.cursors = {}, {}
+        for tp in tps:
+            start = max(tp.offset, self.log.low[tp.partition])
+            self.pos[tp.partition] = start
+            self.cursors[tp.partition] = self._cursor(tp.partition, start)
+
+    def seek(self, tp):
+        self.seek_calls.append((tp.partition, tp.offset))
+        start = max(tp.offset, self.log.low[tp.partition])
+        self.pos[tp.partition] = start
+        self.cursors[tp.partition] = self._cursor(tp.partition, start)
 
     def poll(self, timeout=None):
         self.polls += 1
         if self.stall_polls:
             self.stall_polls -= 1
             return None
-        if not self.queue:
+        candidates = []
+        for p, cursor in self.cursors.items():
+            entries = self.log.entries[p]
+            if cursor < len(entries):
+                off, headers = entries[cursor]
+                candidates.append((off, p, headers))
+        if not candidates:
             return None
-        p, off, h = self.queue.pop(0)
+        off, p, headers = min(candidates)
+        self.cursors[p] += 1
         self.pos[p] = off + 1
         return SimpleNamespace(
-            error=lambda: None, partition=lambda: p, offset=lambda: off, headers=lambda: h
+            error=lambda: None, partition=lambda: p, offset=lambda: off, headers=lambda: headers
         )
 
     def position(self, tps):
@@ -115,7 +131,7 @@ class LogReader:
         # past trailing offsets that carry no message.
         out = []
         for tp in tps:
-            pending = any(q[0] == tp.partition for q in self.queue)
+            pending = self.cursors[tp.partition] < len(self.log.entries[tp.partition])
             pos = self.pos[tp.partition] if pending else self.log.high[tp.partition]
             out.append(TopicPartition(tp.topic, tp.partition, pos))
         return out
@@ -137,6 +153,24 @@ def index(log, **kw):
     kw.setdefault("timeout", 30.0)
     reader = kw.pop("reader", None) or LogReader(log)
     return DlqIndex(reader, DLQ, source_topic=TOPIC, consumer_group=GROUP, **kw)
+
+
+class CountingIndex:
+    """Wrap a DlqIndex to assert refresh frequency without changing its semantics."""
+
+    def __init__(self, inner):
+        self.inner = inner
+        self.refresh_calls = 0
+
+    def refresh(self):
+        self.refresh_calls += 1
+        return self.inner.refresh()
+
+    def __contains__(self, identity):
+        return identity in self.inner
+
+    def update(self, identities):
+        self.inner.update(identities)
 
 
 class LogDlqWriter:
@@ -258,7 +292,9 @@ def test_incremental_refresh_reads_only_new_messages():
     log.dead_letter(bad(5))
     log.dead_letter(bad(6))
     assert idx.refresh() == 2
-    assert idx._reader.assignments[-1] == {0: 5}  # resumes where the last refresh ended
+    assert idx._reader.assignments == [{0: 0}]  # stays assigned; polls continue at offset 5
+    assert idx._reader.seek_calls == []
+    assert idx._positions == {0: 7}
     assert idx.messages_read == 7 and len(idx) == 7
 
 
@@ -269,10 +305,11 @@ def test_multiple_dlq_partitions_are_all_read():
     log.dead_letter(bad(3, partition=2), partition=2)
     idx = index(log)
     assert idx.refresh() == 3
-    assert idx._reader.assignments == [{0: 0, 2: 0}]  # empty partition 1 not assigned
+    assert idx._reader.assignments == [{0: 0, 1: 0, 2: 0}]  # keep empty partitions assigned
     log.dead_letter(bad(4, partition=0), partition=1)
     assert idx.refresh() == 1
-    assert idx._reader.assignments[-1] == {1: 0}
+    assert idx._reader.assignments == [{0: 0, 1: 0, 2: 0}]
+    assert idx._reader.seek_calls == []
     assert {dlq_identity(bad(4, partition=0)), dlq_identity(bad(3, partition=2))} <= set(
         idx._identities
     )
@@ -286,11 +323,13 @@ def test_retention_advancing_the_low_watermark():
     log.expire(0, 4)
     idx = index(log)
     assert idx.refresh() == 6 and idx._reader.assignments == [{0: 4}]
-    # retention later moves past the index position: never read below the low
+    # retention later moves past the index position: seek the existing assignment
     for o in range(10, 15):
         log.dead_letter(bad(o))
     log.expire(0, 12)
-    assert idx.refresh() == 3 and idx._reader.assignments[-1] == {0: 12}
+    assert idx.refresh() == 3
+    assert idx._reader.assignments == [{0: 4}]
+    assert idx._reader.seek_calls == [(0, 12)]
     # identities learnt earlier stay known (retention never causes a resend of those)
     assert dlq_identity(bad(5)) in idx
 
@@ -302,7 +341,9 @@ def test_offset_gaps_without_messages_do_not_stall_the_read():
     idx = index(log, clock=Ticker(0.5))
     assert idx.refresh() == 1
     log.dead_letter(bad(2))
-    assert idx.refresh() == 1 and idx._reader.assignments[-1] == {0: 3}
+    assert idx.refresh() == 1
+    assert idx._reader.assignments == [{0: 0}]  # persistent assignment, no reassign
+    assert idx._positions == {0: 4}
 
 
 @pytest.mark.parametrize(
@@ -357,8 +398,10 @@ def test_refresh_timeout_raises_and_leaves_the_index_unchanged():
     with pytest.raises(DlqError, match="could not read the DLQ"):
         idx.refresh()
     assert len(idx) == 0 and idx.messages_read == 0
+    assert reader.seek_calls == [(0, 0)]  # timeout rewinds the persistent assignment
     reader.stall_polls = 0
     assert idx.refresh() == 1  # the next refresh re-reads from the same position
+    assert reader.assignments == [{0: 0}]
 
 
 # ---------------------------------------- EventConsumer + DlqIndex behaviour
@@ -419,10 +462,22 @@ def test_replay_after_restart_dead_letters_each_record_once():
 def test_partial_dlq_delivery_retry_does_not_duplicate_delivered_records():
     log = DlqLog()
     writer = LogDlqWriter(log, deliver_then_fail=2)  # 2 of 3 confirmed, then an error
-    ec, kafka = consumer(log, [[Msg(bad(o)) for o in range(3)]], writer=writer)
+    idx = CountingIndex(index(log))
+    ec, kafka = consumer(log, [[Msg(bad(o)) for o in range(3)]], writer=writer, idx=idx)
     ec.run(max_batches=1)
     assert all(log.count(dlq_identity(bad(o))) == 1 for o in range(3))
     assert ec.stats.dlq == 3 and ec.stats.retries == {"DLQ publish": 1}
+    assert idx.refresh_calls == 2  # one before the first send, one before the retry
+    assert kafka.commits == [{0: 3}]
+
+
+def test_successful_dlq_batch_uses_one_refresh_before_the_first_publish():
+    log = DlqLog()
+    idx = CountingIndex(index(log))
+    ec, kafka = consumer(log, [[Msg(bad(1)), Msg(bad(2))]], idx=idx)
+    ec.run(max_batches=1)
+    assert idx.refresh_calls == 1
+    assert all(log.count(dlq_identity(bad(o))) == 1 for o in (1, 2))
     assert kafka.commits == [{0: 3}]
 
 
