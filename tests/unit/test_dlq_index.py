@@ -341,7 +341,9 @@ def test_offset_gaps_without_messages_do_not_stall_the_read():
     idx = index(log, clock=Ticker(0.5))
     assert idx.refresh() == 1
     log.dead_letter(bad(2))
-    assert idx.refresh() == 1 and idx._reader.assignments[-1] == {0: 3}
+    assert idx.refresh() == 1
+    assert idx._reader.assignments == [{0: 0}]  # persistent assignment, no reassign
+    assert idx._positions == {0: 4}
 
 
 @pytest.mark.parametrize(
